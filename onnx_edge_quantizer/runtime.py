@@ -41,8 +41,11 @@ def _normalized(name):
     return re.sub(r"[^A-Za-z0-9]", "_", re.sub(r":\d+$", "", name))
 
 
-def map_details(specs, details, explicit=None):
+def map_details(specs, details, explicit=None, input_layouts=None):
     explicit = explicit or {}
+    input_layouts = input_layouts or {}
+    if set(input_layouts) - {spec["name"] for spec in specs}:
+        raise ValueError("Input layout metadata contains unknown ONNX input names")
     result, used = {}, set()
     for spec in specs:
         requested = explicit.get(spec["name"], spec["name"])
@@ -51,9 +54,18 @@ def map_details(specs, details, explicit=None):
             candidates = [d for d in details if _normalized(d["name"]) == _normalized(requested)]
         if len(candidates) != 1 or candidates[0]["index"] in used:
             raise ValueError(f"Cannot uniquely map ONNX input {spec['name']!r} to TFLite names {[d['name'] for d in details]}; use --input-map ONNX_NAME=TFLITE_NAME")
-        detail = candidates[0]
-        if tuple(detail["shape"]) != tuple(spec["shape"]):
-            raise ValueError(f"Input layout/shape mismatch for {spec['name']}: ONNX {spec['shape']}, TFLite {detail['shape'].tolist()}; a layout-preserving conversion is required")
+        detail = dict(candidates[0])
+        expected_shape = list(spec["shape"])
+        layout = input_layouts.get(spec["name"])
+        if layout:
+            permutation = layout["onnx_to_tflite_permutation"]
+            if (layout["tflite_name"] != detail["name"]
+                    or sorted(permutation) != list(range(len(expected_shape)))):
+                raise ValueError(f"Invalid input layout metadata for {spec['name']!r}")
+            expected_shape = [expected_shape[axis] for axis in permutation]
+            detail["onnx_to_tflite_permutation"] = permutation
+        if tuple(detail["shape"]) != tuple(expected_shape):
+            raise ValueError(f"Input layout/shape mismatch for {spec['name']}: ONNX {spec['shape']}, TFLite {detail['shape'].tolist()}; no matching input layout transformation was recorded")
         result[spec["name"]] = detail
         used.add(detail["index"])
     if len(used) != len(details):
@@ -63,9 +75,15 @@ def map_details(specs, details, explicit=None):
     return result
 
 
+def tflite_input_value(sample, name, detail):
+    value = sample[name]
+    permutation = detail.get("onnx_to_tflite_permutation")
+    return np.ascontiguousarray(np.transpose(value, permutation)) if permutation else value
+
+
 def run(instance, sample, mapping):
     for name, detail in mapping.items():
-        value = sample[name]
+        value = tflite_input_value(sample, name, detail)
         if np.issubdtype(detail["dtype"], np.integer):
             scales = detail["quantization_parameters"]["scales"]
             zeros = detail["quantization_parameters"]["zero_points"]
@@ -88,9 +106,9 @@ def run(instance, sample, mapping):
     return outputs
 
 
-def calibrate(path, specs, samples, input_map=None):
+def calibrate(path, specs, samples, input_map=None, input_layouts=None):
     instance = make_interpreter(path, preserve=True)
-    mapping = map_details(specs, instance.get_input_details(), input_map)
+    mapping = map_details(specs, instance.get_input_details(), input_map, input_layouts)
     model = read_model(path)
     if len(model.subgraphs) != 1:
         raise ValueError("Calibration currently supports one TFLite subgraph; control-flow models need a specialized backend")
@@ -126,7 +144,8 @@ def signature_samples(model, samples, mapping):
         name = tensor_map.name.decode() if isinstance(tensor_map.name, bytes) else tensor_map.name
         signature_mapping[name] = reverse[int(tensor_map.tensorIndex)]
     key = signature.signatureKey.decode() if isinstance(signature.signatureKey, bytes) else signature.signatureKey
-    return {key: [{name: sample[source] for name, source in signature_mapping.items()} for sample in samples]}
+    return {key: [{name: tflite_input_value(sample, source, mapping[source])
+                   for name, source in signature_mapping.items()} for sample in samples]}
 
 
 def inventory(path):

@@ -17,13 +17,14 @@ def metrics(reference, actual):
             "cosine_similarity": float(np.dot(a, b) / denominator) if denominator else (1.0 if np.array_equal(a, b) else 0.0)}
 
 
-def validate(onnx_path, float_path, quant_path, specs, samples, input_map, output_map, atol, rtol):
+def validate(onnx_path, float_path, quant_path, specs, samples, input_map, output_map, atol, rtol,
+             output_layouts=None, input_layouts=None):
     import onnxruntime as ort
     original = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
     fp = make_interpreter(float_path)
     q = make_interpreter(quant_path)
-    fm = map_details(specs, fp.get_input_details(), input_map)
-    qm = map_details(specs, q.get_input_details(), input_map)
+    fm = map_details(specs, fp.get_input_details(), input_map, input_layouts)
+    qm = map_details(specs, q.get_input_details(), input_map, input_layouts)
     onnx_names = [d.name for d in original.get_outputs()]
     mappings = {}
     for name in onnx_names:
@@ -39,6 +40,9 @@ def validate(onnx_path, float_path, quant_path, specs, samples, input_map, outpu
         raise ValueError("ONNX and TFLite outputs must have a one-to-one name mapping")
     if set(output_map) - set(onnx_names):
         raise ValueError("--output-map contains unknown ONNX output names")
+    output_layouts = output_layouts or {}
+    if set(output_layouts) - set(onnx_names):
+        raise ValueError("Output layout metadata contains unknown ONNX output names")
     comparisons = []
     for index, sample in enumerate(samples):
         baseline = dict(zip(onnx_names, original.run(onnx_names, sample)))
@@ -46,10 +50,25 @@ def validate(onnx_path, float_path, quant_path, specs, samples, input_map, outpu
         for name, tfl_name in mappings.items():
             if tfl_name not in quant_outputs:
                 raise ValueError(f"Quantized output name changed: {tfl_name}")
-            float_metrics = metrics(baseline[name], float_outputs[tfl_name])
-            if not np.allclose(baseline[name], float_outputs[tfl_name], atol=atol, rtol=rtol):
+            float_value, quant_value = float_outputs[tfl_name], quant_outputs[tfl_name]
+            raw_shape = list(float_value.shape)
+            if quant_value.shape != float_value.shape:
+                raise ValueError(f"FP32/quantized output shape mismatch for {tfl_name!r}: "
+                                 f"{float_value.shape} vs {quant_value.shape}")
+            layout = output_layouts.get(name)
+            if layout:
+                if layout["tflite_name"] != tfl_name:
+                    raise ValueError(f"Converted output layout name mismatch for {name!r}")
+                permutation = layout["tflite_to_onnx_permutation"]
+                if sorted(permutation) != list(range(float_value.ndim)):
+                    raise ValueError(f"Invalid converted output permutation for {name!r}: {permutation}")
+                float_value = np.transpose(float_value, permutation)
+                quant_value = np.transpose(quant_value, permutation)
+            float_metrics = metrics(baseline[name], float_value)
+            if not np.allclose(baseline[name], float_value, atol=atol, rtol=rtol):
                 raise ValueError(f"FP32 conversion parity failed for output {name!r}: {float_metrics}. Check layout/operator conversion or configure --float-atol/--float-rtol")
             comparisons.append({"sample": index, "output": name, "onnx_vs_float_tflite": float_metrics,
-                                "onnx_vs_quantized": metrics(baseline[name], quant_outputs[tfl_name]),
-                                "float_vs_quantized": metrics(float_outputs[tfl_name], quant_outputs[tfl_name])})
+                                "onnx_vs_quantized": metrics(baseline[name], quant_value),
+                                "float_vs_quantized": metrics(float_value, quant_value),
+                                "output_shapes": {"onnx": list(baseline[name].shape), "tflite": raw_shape}})
     return comparisons

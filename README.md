@@ -113,7 +113,7 @@ onnx-edge-quantizer model.onnx -o model_reference.tflite \
   --calibration calibration.npz
 ```
 
-动态输入尺寸必须显式指定，数据沿用 ONNX 的输入布局（例如 NCHW），工具不猜测或自动转置外部数据：
+动态输入尺寸必须显式指定；校准和验证数据仍沿用 ONNX 的输入布局（例如 NCHW）。工具只根据已记录的输入接口转换向 TFLite 传入对应布局，不按形状猜测轴顺序：
 
 ```bash
 onnx-edge-quantizer model.onnx -o model_int8.tflite \
@@ -121,6 +121,8 @@ onnx-edge-quantizer model.onnx -o model_int8.tflite \
 ```
 
 多输入模型可以重复指定 `--input-shape`。转换后的输入/输出若更名，可显式提供 `--input-map 'images=converted_images'`、`--output-map 'scores=converted_scores'`。不根据同形状或顺序猜测多输入/输出映射。
+
+如果 onnx2tf 将输出从 NCHW 改为 NHWC，输出校验会读取转换器生成的 tensor correspondence report，按其中明确记录的布局转换对齐 FP32 和量化输出后再计算误差。导出的 TFLite 保持转换后的实际布局；报告中的 `output_layouts` 记录比较使用的轴置换，`validation[].output_shapes` 记录两边实际 shape。不会通过尝试不同转置或 reshape 来放宽数值一致性检查。使用 `--float-tflite` 时不自动套用转换器布局记录。
 
 其他选项：
 
@@ -133,6 +135,14 @@ onnx-edge-quantizer model.onnx -o model_int8.tflite \
 - `--float-atol`、`--float-rtol`：配置 ONNX 与浮点 TFLite 输出一致性检查的容差；默认分别为 `1e-4`、`1e-3`。
 
 **合成的单组随机输入可验证流程，不代表真实任务分布。** 实际部署应使用经过正确预处理、有代表性的输入校准，并使用独立验证集检查精度；分类准确率、检测 mAP 等任务指标需要在应用侧评估。
+
+## TFLite 输入布局
+
+默认将可安全吸收的输入布局转换合并到 TFLite 输入接口：例如 ONNX `[1,C,H,W]` 输入先经过 `[0,2,3,1]` 转置时，TFLite 直接接收 `[1,H,W,C]`，移除该边界转置；单通道时等价的 reshape 也会移除。只处理输入唯一消费者是这种明确布局转换的情况，普通 reshape 和多分支输入保持原计算语义。
+
+用户提供的校准、验证数据仍按原 ONNX 名称和布局保存；工具对 TFLite 的范围采集、AEQ 校准和输出验证使用同一份输入轴置换，ONNX 推理继续使用原始数据。报告中的 `inputs` 是 ONNX 输入，`tflite_inputs` 是导出接口的实际 shape，`input_layouts` 记录每个输入的转换和移除的算子。部署时应按导出模型的实际输入布局喂入数据。
+
+如需保留原来的 ONNX 输入接口，增加 `--keep-onnx-input-layout`。使用 `--float-tflite` 时不修改用户提供的浮点模型。
 
 ## 校准数据格式
 

@@ -56,6 +56,8 @@ def parser():
     p.add_argument("--random-min", type=float, default=-1.0)
     p.add_argument("--random-max", type=float, default=1.0)
     p.add_argument("--float-tflite", type=Path, help="Reuse an existing equivalent FP32 TFLite, bypassing onnx2tf; parity is still verified")
+    p.add_argument("--keep-onnx-input-layout", action="store_true",
+                   help="Keep the ONNX input interface instead of absorbing boundary layout adapters into TFLite inputs")
     p.add_argument("--validation-data", type=Path, help="Separate .npy/.npz validation inputs; otherwise use all calibration samples")
     p.add_argument("--float-atol", type=float, default=1e-4)
     p.add_argument("--float-rtol", type=float, default=1e-3)
@@ -78,7 +80,7 @@ def doctor():
 
 def _execute(args, workdir):
     from .data import input_specs, load_samples
-    from .converter import convert_onnx
+    from .converter import convert_onnx, converted_output_layouts, expose_channel_last_inputs
     from .runtime import calibrate, inventory, check_native_precision
     from .backends import native_export, reference_export
     from .validation import validate
@@ -89,8 +91,14 @@ def _execute(args, workdir):
     config = Config(args.weight_dtype, args.activation_dtype, args.weight_scheme, args.activation_scheme, args.weight_granularity)
     LOG.info("Converting ONNX to FP32 TFLite")
     float_path = args.float_tflite.resolve() if args.float_tflite else convert_onnx(model, specs, workdir)
+    output_layouts = converted_output_layouts(model, float_path) if not args.float_tflite else {}
+    input_layouts = (expose_channel_last_inputs(float_path, specs)
+                     if not args.float_tflite and not args.keep_onnx_input_layout else {})
+    for name, layout in input_layouts.items():
+        LOG.info("TFLite input %s: %s -> %s; absorbed boundary %s", name,
+                 layout["onnx_shape"], layout["tflite_shape"], layout["removed_adapter"])
     LOG.info("Running FP32 inference and collecting intermediate min/max ranges")
-    ranges, mapping = calibrate(float_path, specs, samples, pairs(args.input_map))
+    ranges, mapping = calibrate(float_path, specs, samples, pairs(args.input_map), input_layouts)
     if not ranges:
         raise ValueError("No floating-point activations found for calibration")
     candidate = workdir / "candidate.tflite"
@@ -111,14 +119,18 @@ def _execute(args, workdir):
     validation_samples = load_samples(args.validation_data, specs) if args.validation_data else samples
     LOG.info("Checking ONNX/FP32 TFLite parity and running quantized model on %d sample(s)", len(validation_samples))
     comparisons = validate(args.model, float_path, candidate, specs, validation_samples, pairs(args.input_map),
-                           pairs(args.output_map), args.float_atol, args.float_rtol)
+                           pairs(args.output_map), args.float_atol, args.float_rtol,
+                           output_layouts=output_layouts, input_layouts=input_layouts)
     report = {"tool_version": __version__, "mode": args.mode, "algorithm": "min-max", "granularity": config.weight_granularity,
               "weight_granularity": config.weight_granularity, "activation_granularity": "per-tensor",
               "requested": config.__dict__, "inputs": specs, "synthetic_calibration": args.calibration is None,
               "calibration_samples": len(samples), "validation_samples": len(validation_samples),
               "seed": args.seed if args.calibration is None else None,
               "activation_ranges": {str(i): {"min": lo, "max": hi} for i, (lo, hi) in ranges.items()},
-              "backend_details": details, "output_inventory": model_inventory, "validation": comparisons,
+              "backend_details": details, "output_inventory": model_inventory,
+              "output_layouts": output_layouts, "input_layouts": input_layouts,
+              "tflite_inputs": [{"name": d["name"], "shape": d["shape"].tolist()}
+                                for d in mapping.values()], "validation": comparisons,
               "input_onnx": str(args.model.resolve()), "output_tflite": str(args.output.resolve()),
               "output_bytes": candidate.stat().st_size,
               "warnings": (["Synthetic data does not establish real task accuracy"] if args.calibration is None else [])
