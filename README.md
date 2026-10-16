@@ -17,44 +17,65 @@
 
 ## 安装（Conda，推荐）
 
-先安装 Miniconda、Anaconda 或 Miniforge，然后在支持 `conda` 的终端中执行。以下步骤适用于 Windows、Linux 和 macOS：
+先安装 Miniconda、Anaconda 或 Miniforge，然后在支持 `conda` 的终端中执行。以下示例使用 Bash（Linux/macOS）；Windows PowerShell 的写法见下文：
 
 ```bash
 git clone https://github.com/zhzhzh-ai/onnx-edge-quantizer.git
 cd onnx-edge-quantizer
 conda env create -f environment.yml
 conda activate onnx-edge-quantizer
+export PYTHONNOUSERSITE=1
 python scripts/install.py
 ```
 
 `environment.yml` 创建名为 `onnx-edge-quantizer` 的 Python 3.12 环境，并安装 pip。随后安装脚本按经过验证的顺序安装 onnx2tf、Google AI Edge Quantizer 和 LiteRT；这些转换依赖仍通过当前 Conda 环境里的 pip 安装。
+
+**安装前设置 `PYTHONNOUSERSITE=1`，并在后续测试和量化时保持该设置。** 它会禁止 Python 加载用户级 `site-packages`（Linux 上通常为 `~/.local/lib/python3.12/site-packages`），避免 pip 借用环境外已有的 `ml_dtypes`、`sympy` 等依赖。仅激活 Conda 环境并不能保证这些依赖全部安装在环境内。
+
+本机已验证的 Linux 安装方式（已有同名 Conda 环境和源码目录）：
+
+```bash
+conda activate onnx-edge-quantizer
+export PYTHONNOUSERSITE=1
+
+cd /data/Teammember/huan.zhang/modelconvert/onnx-edge-quantizer
+python scripts/install.py
+```
+
+其他机器请将 `cd` 路径替换为自己的项目目录。已有环境也应在设置 `PYTHONNOUSERSITE=1` 后执行安装脚本，让环境外的依赖被安装到当前 Conda 环境中。每次打开新终端，都需要重新激活环境并设置该变量。
 
 也可以不使用环境文件，手动创建相同环境：
 
 ```bash
 conda create -n onnx-edge-quantizer -c conda-forge --override-channels python=3.12 pip -y
 conda activate onnx-edge-quantizer
+export PYTHONNOUSERSITE=1
 python scripts/install.py
 ```
 
 检查环境并生成 W4A8 模型：
 
 ```bash
+python -m pip check
 python -m onnx_edge_quantizer --doctor
 onnx-edge-quantizer model.onnx -o model_w4a8.tflite --weight-dtype int4 --activation-dtype int8 --calibration calibration.npz
 ```
 
-Windows PowerShell 激活 Conda 环境后也可以使用：
+Windows PowerShell 使用 `$env:PYTHONNOUSERSITE = "1"` 设置相同的隔离选项：
 
 ```powershell
+conda activate onnx-edge-quantizer
+$env:PYTHONNOUSERSITE = "1"
+# 在项目目录中安装；首次使用前仍需创建环境并下载源码。
+python scripts/install.py
 .\quantize.ps1 model.onnx -o model_w4a8.tflite --weight-dtype int4 --activation-dtype int8 --calibration calibration.npz
 ```
 
-Windows 启动脚本优先使用当前激活的 Conda 环境；没有激活 Conda 时，仍兼容激活的 venv 和项目原有的 `.venv312` / `.venv`。安装脚本会检查实际运行的 Python 是否属于所激活的 Conda 环境，且不往 Conda `base` 环境安装。以后重新打开终端，只需先执行 `conda activate onnx-edge-quantizer`。
+Windows 启动脚本优先使用当前激活的 Conda 环境；没有激活 Conda 时，仍兼容激活的 venv 和项目原有的 `.venv312` / `.venv`。安装脚本会检查实际运行的 Python 是否属于所激活的 Conda 环境，且不往 Conda `base` 环境安装。以后重新打开终端，先执行 `conda activate onnx-edge-quantizer`，再按终端类型设置 `PYTHONNOUSERSITE=1`。
 
 `onnx2tf>=2.6.9` 的直接 FlatBuffer 转换后端要求 Python 3.12+，不需要 TensorFlow。onnx2tf 依赖 stable LiteRT，而 AEQ 依赖 nightly LiteRT，两者使用相同 Python 模块名；`scripts/install.py` 保证最后安装本项目验证的 nightly 运行时。请不要把所有依赖无序地并入 `environment.yml` 的 pip 部分。
 
-如需手动安装后端，请在激活的 Conda 环境执行：
+如需手动安装后端，请在激活 Conda 环境并设置 `PYTHONNOUSERSITE=1` 后执行：
 
 ```bash
 python -m pip install -e '.[convert,test]' onnx2tf==2.6.9
