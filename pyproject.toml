@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onnx-edge-quantizer"
+version = "0.1.0"
+description = "ONNX to min-max quantized TFLite with strict precision validation"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26,<3", "onnx>=1.17,<2", "onnxruntime>=1.20,<2", "flatbuffers>=24", "ai-edge-litert>=2.1.2,<3"]
+
+[project.optional-dependencies]
+convert = ["onnx2tf>=2.6.9,<2.7; python_version>='3.12'"]
+native = ["ai-edge-quantizer-nightly"]
+test = ["pytest>=8,<10"]
+
+[project.scripts]
+onnx-edge-quantizer = "onnx_edge_quantizer.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["onnx_edge_quantizer*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
