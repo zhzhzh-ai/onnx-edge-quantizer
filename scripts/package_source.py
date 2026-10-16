@@ -9,7 +9,7 @@ def main():
     destination = root / "artifacts" / "onnx-edge-quantizer-source.zip"
     destination.parent.mkdir(parents=True, exist_ok=True)
     files = [root / name for name in ["pyproject.toml", "README.md", "Dockerfile", ".dockerignore", ".gitignore",
-                                     "quantize.ps1", "requirements-windows-tested.txt"]]
+                                     "quantize.ps1", "requirements-windows-tested.txt", "environment.yml"]]
     for folder in ["onnx_edge_quantizer", "tests", "examples", "scripts"]:
         files.extend((root / folder).rglob("*.py"))
     files.extend((root / ".github").rglob("*.yml"))

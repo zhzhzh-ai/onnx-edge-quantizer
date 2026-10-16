@@ -15,62 +15,55 @@
 - `uint8` 模型输入/输出与 `uint8` 内部激活不是一回事。本工具的精度参数指计算图内部精度；原生模式不把 UINT8 I/O 包装视为 UINT8 内部量化。
 - 此工具不能保证转换任意 ONNX 算子。浮点 ONNX→TFLite 转换由 onnx2tf 负责；不支持的算子、控制流、多子图和不匹配的输入布局会明确失败。当前模型运行时输入必须全部是 FP32 张量。
 
-## 安装
+## 安装（Conda，推荐）
 
-从 GitHub 克隆或下载本项目后，请进入包含 `pyproject.toml` 的项目根目录。推荐使用 Python 3.12 创建并激活虚拟环境，然后运行安装脚本（会按验证过的顺序安装转换器、AEQ 与 LiteRT）：
+先安装 Miniconda、Anaconda 或 Miniforge，然后在支持 `conda` 的终端中执行。以下步骤适用于 Windows、Linux 和 macOS：
 
 ```bash
 git clone https://github.com/zhzhzh-ai/onnx-edge-quantizer.git
 cd onnx-edge-quantizer
+conda env create -f environment.yml
+conda activate onnx-edge-quantizer
+python scripts/install.py
 ```
 
-```powershell
-# Windows PowerShell
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe scripts/install.py
-.\quantize.ps1 model.onnx -o model_w4a8.tflite --weight-dtype int4 --activation-dtype int8 --calibration calibration.npz
-```
+`environment.yml` 创建名为 `onnx-edge-quantizer` 的 Python 3.12 环境，并安装 pip。随后安装脚本按经过验证的顺序安装 onnx2tf、Google AI Edge Quantizer 和 LiteRT；这些转换依赖仍通过当前 Conda 环境里的 pip 安装。
+
+也可以不使用环境文件，手动创建相同环境：
 
 ```bash
-# Linux/macOS
-python3.12 -m venv .venv
-source .venv/bin/activate
+conda create -n onnx-edge-quantizer -c conda-forge --override-channels python=3.12 pip -y
+conda activate onnx-edge-quantizer
 python scripts/install.py
+```
+
+检查环境并生成 W4A8 模型：
+
+```bash
+python -m onnx_edge_quantizer --doctor
 onnx-edge-quantizer model.onnx -o model_w4a8.tflite --weight-dtype int4 --activation-dtype int8 --calibration calibration.npz
 ```
 
-以下保留手动安装方式，便于检查依赖版本或调整环境。
+Windows PowerShell 激活 Conda 环境后也可以使用：
 
-推荐 **Linux + Python 3.12**：
+```powershell
+.\quantize.ps1 model.onnx -o model_w4a8.tflite --weight-dtype int4 --activation-dtype int8 --calibration calibration.npz
+```
+
+Windows 启动脚本优先使用当前激活的 Conda 环境；没有激活 Conda 时，仍兼容激活的 venv 和项目原有的 `.venv312` / `.venv`。安装脚本会检查实际运行的 Python 是否属于所激活的 Conda 环境，且不往 Conda `base` 环境安装。以后重新打开终端，只需先执行 `conda activate onnx-edge-quantizer`。
+
+`onnx2tf>=2.6.9` 的直接 FlatBuffer 转换后端要求 Python 3.12+，不需要 TensorFlow。onnx2tf 依赖 stable LiteRT，而 AEQ 依赖 nightly LiteRT，两者使用相同 Python 模块名；`scripts/install.py` 保证最后安装本项目验证的 nightly 运行时。请不要把所有依赖无序地并入 `environment.yml` 的 pip 部分。
+
+如需手动安装后端，请在激活的 Conda 环境执行：
 
 ```bash
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e '.[convert,test]'
+python -m pip install -e '.[convert,test]' onnx2tf==2.6.9
 python -m pip install ai-edge-quantizer-nightly==0.10.0.dev20261016
 python -m pip install --force-reinstall --no-deps ai-edge-litert-nightly==2.4.0.dev20261014
-onnx-edge-quantizer --doctor
 ```
 
-`onnx2tf>=2.6.9` 的直接 FlatBuffer 转换后端要求 Python 3.12+；不需要 TensorFlow。Google AEQ 当前以 `ai-edge-quantizer-nightly` 提供。onnx2tf 依赖 stable LiteRT，而 AEQ 依赖 nightly LiteRT，两者使用相同 Python 模块名；以上安装顺序确保最后使用本项目验证的 nightly 运行时。nightly 与 LiteRT 的兼容性会变化，部署时请保留安装顺序并保存验证后的依赖版本。`requirements-windows-tested.txt` 记录本机实际验证环境，Dockerfile 固定了已验证的 AEQ/LiteRT nightly 版本。
+`requirements-windows-tested.txt` 记录最初在 Windows venv 中验证的依赖版本；Conda 环境需按上述顺序安装后端。GitHub Actions 现在使用同一份 `environment.yml` 创建 Conda 环境后运行测试。若已有等价的浮点 TFLite，可用 `--float-tflite float.tflite` 跳过 onnx2tf；核心模块支持 Python 3.11+，仍会校验与原始 ONNX 的输出一致性。
 
-Windows 可以在 Python 3.12 环境运行参考模式：
-
-```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e '.[convert,test]'
-.\.venv\Scripts\python.exe -m pip install ai-edge-quantizer-nightly==0.10.0.dev20261016
-.\.venv\Scripts\python.exe -m pip install --force-reinstall --no-deps ai-edge-litert-nightly==2.4.0.dev20261014
-.\.venv\Scripts\python.exe -m onnx_edge_quantizer --doctor
-```
-
-若已有等价的浮点 TFLite，可用 `--float-tflite float.tflite` 跳过 onnx2tf；此时核心模块支持 Python 3.11+，仍会校验与原始 ONNX 的输出一致性。
-
-当前工作区已安装好 `.venv312`，可直接在 PowerShell 运行：
-
-```powershell
-.\quantize.ps1 .\model.onnx -o .\model_int8.tflite --calibration .\calibration.npz
-```
 
 ## 常用命令
 
@@ -175,7 +168,7 @@ np.savez('multi.npz',
 可直接运行两个输入、不同数值范围的完整示例：
 
 ```powershell
-.\.venv\Scripts\python.exe examples/make_multi_input_demo.py
+python examples/make_multi_input_demo.py
 .\quantize.ps1 artifacts/multi-input/multi_input.onnx -o artifacts/multi-input/quantized.tflite --calibration artifacts/multi-input/calibration.npz --validation-data artifacts/multi-input/validation.npz
 ```
 

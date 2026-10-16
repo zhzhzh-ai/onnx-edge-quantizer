@@ -11,16 +11,22 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: conda-incubator/setup-miniconda@v4
         with:
-          python-version: '3.12'
+          miniforge-version: latest
+          environment-file: environment.yml
+          activate-environment: onnx-edge-quantizer
+          auto-activate: false
+          channels: conda-forge
+          channel-priority: strict
       - name: Install system libraries
         run: sudo apt-get update && sudo apt-get install -y libgl1 libglib2.0-0
       - name: Install tested backends
-        run: |
-          python -m venv .venv
-          .venv/bin/python scripts/install.py
+        run: python scripts/install.py
       - name: Test real conversion and quantization
-        run: .venv/bin/python -m pytest -q
+        run: python -m pytest -q

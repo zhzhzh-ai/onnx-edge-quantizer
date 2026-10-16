@@ -1,15 +1,25 @@
-"""Install into an activated Python 3.12+ venv, preserving LiteRT overlay order."""
+"""Install into a Python 3.12+ Conda env or venv, preserving LiteRT overlay order."""
 
 from pathlib import Path
+import os
 import subprocess
 import sys
+
+
+def isolated_environment():
+    if sys.prefix != sys.base_prefix:
+        return True
+    # Conda Python generally has prefix == base_prefix, unlike venv Python.
+    prefix = os.environ.get("CONDA_PREFIX")
+    return bool(prefix and os.environ.get("CONDA_DEFAULT_ENV") != "base"
+                and os.path.normcase(os.path.realpath(prefix)) == os.path.normcase(os.path.realpath(sys.prefix)))
 
 
 def main():
     if sys.version_info < (3, 12):
         raise SystemExit("Use Python 3.12+ for the onnx2tf backend.")
-    if sys.prefix == sys.base_prefix:
-        raise SystemExit("Activate a virtual environment first; see README.md.")
+    if not isolated_environment():
+        raise SystemExit("Activate a named Conda environment or a venv first; see README.md.")
     root = Path(__file__).resolve().parents[1]
     commands = [
         ["-e", f"{root}[convert,test]", "onnx2tf==2.6.9"],
