@@ -12,7 +12,19 @@ def modules():
 def read_model(path):
     _, schema = modules()
     # Object API arrays are zero-copy views; bytearray permits graph rewrites.
-    return schema.ModelT.InitFromObj(schema.Model.GetRootAsModel(bytearray(path.read_bytes()), 0))
+    content = bytearray(path.read_bytes())
+    model = schema.ModelT.InitFromObj(schema.Model.GetRootAsModel(content, 0))
+    # AEQ can store larger weight buffers outside the FlatBuffer table. The
+    # object API does not populate their data field, so resolve file offsets
+    # before inspecting weights or serializing a modified model.
+    for index, buffer in enumerate(model.buffers):
+        offset, size = int(buffer.offset), int(buffer.size)
+        if offset > 1:
+            if size <= 0 or offset > len(content) or size > len(content) - offset:
+                raise ValueError(f"Invalid external TFLite buffer {index}: offset={offset}, size={size}")
+            buffer.data = np.frombuffer(content, dtype=np.uint8, count=size, offset=offset)
+            buffer.offset, buffer.size = 0, 0
+    return model
 
 
 def write_model(model, path):
@@ -117,6 +129,18 @@ def calibrate(path, specs, samples, input_map=None, input_layouts=None):
     produced = {int(i) for op in graph.operators for i in op.outputs if i >= 0}
     targets = produced | set(map(int, graph.inputs))
     ranges = {}
+    scalar_shapes = False
+    # Some direct-converter scalar tensors omit the shape vector entirely.
+    # LiteRT has prepared their kernel contracts; serialize its proven rank-0
+    # shape explicitly because AEQ expects an iterable shape for DQ insertion.
+    for detail in instance.get_tensor_details():
+        if int(detail['index']) >= len(graph.tensors):
+            continue
+        tensor = graph.tensors[int(detail['index'])]
+        if tensor.shape is None and len(detail['shape']) == 0:
+            tensor.shape = np.array([], np.int32)
+            tensor.hasRank = True
+            scalar_shapes = True
     for sample in samples:
         run(instance, sample, mapping)
         for i in sorted(targets):
@@ -129,6 +153,8 @@ def calibrate(path, specs, samples, input_map=None, input_layouts=None):
             lo, hi = float(value.min()), float(value.max())
             old = ranges.get(i, (lo, hi))
             ranges[i] = (min(lo, old[0]), max(hi, old[1]))
+    if scalar_shapes:
+        write_model(model, path)
     return ranges, mapping
 
 
@@ -222,6 +248,15 @@ def check_native_precision(path, weight_dtype, activation_dtype, weight_granular
             biases.update(int(op.inputs[pos]) for pos in bias_positions if pos < len(op.inputs) and op.inputs[pos] >= 0)
         for i, tensor in enumerate(graph.tensors):
             qp = tensor.quantization
+            if i in weights and weight_dtype == 'int4':
+                if (tensor.type != expected_weight or qp is None or qp.scale is None
+                        or not len(qp.scale) or qp.detailsType != 0):
+                    raise ValueError(f"Native weight {tensor.name!r} requires the requested static affine precision")
+                if weight_dtype == 'int4':
+                    data = model.buffers[tensor.buffer].data
+                    count = int(np.prod(tensor.shape, dtype=np.int64))
+                    if data is None or len(data) != (count + 1) // 2:
+                        raise ValueError(f"Invalid packed INT4 buffer length on {tensor.name!r}")
             if qp is None or qp.scale is None or not len(qp.scale) or i in biases:
                 continue
             if not np.isfinite(qp.scale).all() or np.any(qp.scale <= 0):

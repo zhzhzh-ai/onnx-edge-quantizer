@@ -20,7 +20,12 @@ def metrics(reference, actual):
 def validate(onnx_path, float_path, quant_path, specs, samples, input_map, output_map, atol, rtol,
              output_layouts=None, input_layouts=None):
     import onnxruntime as ort
-    original = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+    options = ort.SessionOptions()
+    # Validate the source graph itself. Optimizer shape/constant folding can
+    # change dynamic detector graphs (e.g. YOLOv3-tinyu's generated grids).
+    options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    original = ort.InferenceSession(str(onnx_path), sess_options=options,
+                                    providers=["CPUExecutionProvider"])
     fp = make_interpreter(float_path)
     q = make_interpreter(quant_path)
     fm = map_details(specs, fp.get_input_details(), input_map, input_layouts)

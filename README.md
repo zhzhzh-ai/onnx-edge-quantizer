@@ -88,6 +88,17 @@ python -m pip install --force-reinstall --no-deps ai-edge-litert-nightly==2.4.0.
 
 ## 常用命令
 
+Linux 本地环境可使用项目根目录的 `run_w4a8.sh`，默认转换 Alexnet 为 W4A8（per-channel 权重）并检查与 Alexnet UINT8 基准的结构一致性：
+
+```bash
+bash run_w4a8.sh --overwrite
+bash run_w4a8.sh /path/to/model.onnx -o output/model_w4a8.tflite \
+  --calibration /path/to/calibration.npy \
+  --structure-reference /path/to/model_uint8.tflite
+```
+
+脚本使用现有 `onnx-edge-quantizer` Python 环境，可通过 `W4A8_PYTHON` 覆盖解释器路径。默认不覆盖已有输出；`--overwrite` 显式允许覆盖，`--dry-run` 只打印命令，`--help` 查看帮助。其他模型需自行指定结构参考；未提供校准数据时使用合成输入验证流程。
+
 默认：不提供校准数据时，按模型输入形状生成 **1 组** `[-1, 1)` 均匀分布 FP32 输入，种子为 0，实际运行模型、收集中间层范围：
 
 ```bash
@@ -116,7 +127,42 @@ onnx-edge-quantizer model.onnx -o model_w4a8.tflite \
   --weight-dtype int4 --activation-dtype int8 --calibration calibration.npz
 ```
 
-这会请求真正的 W4A8 原生整数模型，而非参考模拟。当前验证过全连接算子的两种权重粒度。实际模型是否能全部使用 W4A8，取决于 AEQ/LiteRT 的算子覆盖：当前安装版本的 W4 静态策略包含 FullyConnected 和 Conv2D，DepthwiseConv2D 等算子并不在该 W4 策略中。若模型含不支持的算子，默认严格报错；`--allow-float-ops` 导出的混合模型不能视为全模型 W4A8，也不保证加速器支持。
+W4A8 使用本项目的静态 affine 导出路径：先由 AEQ 建立 A8 整数图并校准激活，再从原始 FP32 权重重新计算 INT4 scale/code，按低半字节在前打包，同时重新计算 INT32 bias。支持 Conv2D、DepthwiseConv2D 和 FullyConnected，支持逐张量和逐通道权重；不会截断 W8 码值或复用 W8 权重 scale，也不会自动引入动态分块 FC。若近零激活范围使 bias 超出 INT32，则增大对应权重 scale，保留整数 bias 的可表达性。其他含权重的算子明确拒绝，最终仍需通过 LiteRT 实际推理。
+
+### 与已有 UINT8 TFLite 对齐结构
+
+转换前规范化通道预处理、可证明等价的池化/卷积 padding、Conv 后通道仿射、融合激活及多余 reshape。默认不修改 `--float-tflite` 提供的模型。
+
+通过 `--structure-reference baseline_uint8.tflite` 启用发布前结构检查。例如：
+
+```bash
+python -m onnx_edge_quantizer GoogleNet.onnx -o googlenet_w4a8.tflite \
+  --weight-dtype int4 --weight-granularity per-channel \
+  --structure-reference GoogleNet_uint8.tflite
+```
+
+检查覆盖算子、数据连接、各输入输出形状、广播常量形状、perm/axis/padding 等控制常量及融合激活；权重值、scale/zero point、INT8/UINT8 signedness、名称和 opcode 版本不要求相同。SAME/VALID 仅在实际 padding 完全相同时视为等价。结构检查不替代 ONNX/FP32 数值校验或最终量化推理。
+
+使用结构基准时，四维输入遵循 `[0,2,3,1]` 部署轴顺序；已有输入转置可吸收，否则插入逆转置保证计算不变。校准和验证数据仍按 ONNX 原始布局提供；`--keep-onnx-input-layout` 可禁止该接口调整。
+
+结构不一致会报错，保留已有输出；用 `--keep-workdir NEW_DIR` 查看 `candidate.tflite` 和 `structure_comparison.json`。成功报告包含 `structure_comparison.matched=true`。独立检查：
+
+```bash
+python -m onnx_edge_quantizer.structure candidate.tflite baseline.tflite --report structure.json
+```
+
+批量匹配同名 ONNX 与 `*_uint8.tflite`，逐个转换并执行结构、精度和推理检查：
+
+```bash
+python scripts/validate_model_zoo.py \
+  --onnx-root /path/to/model_zoo/onnx \
+  --reference-root /path/to/tflite_uint8 \
+  --output-dir output/zoo_validation --workers 2
+```
+
+可用 `--models GoogleNet Alexnet` 筛选，`--dry-run` 查看配对。单输入动态尺寸按结构基准和明确的部署轴顺序补全；多输入动态尺寸拒绝猜测。`validation_summary.json` 记录全部成功和失败项，不把不兼容的旧基准、浮点转换错误或超时计为通过。
+
+可用 `--failed-from PREVIOUS_SUMMARY.json` 仅重试之前失败的配对。2026-10-30 完整回归为 **31/44 对通过**，原先失败的 30 对中修复 17 对；实现、产物和剩余阻塞见 [调试记录](docs/W4A8_DEBUG_30.md)。
 
 原生 INT8 权重 + INT16 激活，显式使用对称激活：
 
@@ -159,7 +205,7 @@ onnx-edge-quantizer model.onnx -o model_int8.tflite \
 
 ## TFLite 输入布局
 
-默认将可安全吸收的输入布局转换合并到 TFLite 输入接口：例如 ONNX `[1,C,H,W]` 输入先经过 `[0,2,3,1]` 转置时，TFLite 直接接收 `[1,H,W,C]`，移除该边界转置；单通道时等价的 reshape 也会移除。只处理输入唯一消费者是这种明确布局转换的情况，普通 reshape 和多分支输入保持原计算语义。
+默认将可安全吸收的输入布局转换合并到 TFLite 输入接口：例如 ONNX `[1,C,H,W]` 输入先经过 `[0,2,3,1]` 转置时，TFLite 直接接收 `[1,H,W,C]`，移除该边界转置；单通道时等价的 reshape 也会移除。GoogleNet 一类明确的 Gather(axis=1) 通道分支也可暴露 NHWC 接口，并插入逆转置使原分支计算保持不变。普通 reshape 不作为布局证据；指定结构基准时采用上文明确的部署轴顺序。
 
 用户提供的校准、验证数据仍按原 ONNX 名称和布局保存；工具对 TFLite 的范围采集、AEQ 校准和输出验证使用同一份输入轴置换，ONNX 推理继续使用原始数据。报告中的 `inputs` 是 ONNX 输入，`tflite_inputs` 是导出接口的实际 shape，`input_layouts` 记录每个输入的转换和移除的算子。部署时应按导出模型的实际输入布局喂入数据。
 

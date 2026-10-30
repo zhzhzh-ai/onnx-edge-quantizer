@@ -229,3 +229,40 @@ def test_image_and_vector_inputs_keep_onnx_calibration_layout(tmp_path, mode):
         "image": [1, 6, 8, 3], "offset": [1, 2]}
     assert report["calibration_samples"] == 4
     assert max(v["onnx_vs_float_tflite"]["max_abs_error"] for v in report["validation"]) < 1e-5
+
+
+@pytest.mark.skipif(importlib.util.find_spec("onnx2tf") is None
+                    or importlib.util.find_spec("ai_edge_quantizer") is None,
+                    reason="Both conversion and quantization backends are required")
+@pytest.mark.parametrize("concat", [False, True])
+def test_native_w4a8_ceil_maxpool_after_relu(tmp_path, concat):
+    """GoogleNet-style ceil pooling must keep native W4 weights and A8 ops."""
+    import numpy as np
+    import onnx
+    from onnx import helper, numpy_helper, TensorProto
+    rng = np.random.default_rng(53)
+    nodes = [helper.make_node("Conv", ["image", "weight"], ["conv"]),
+             helper.make_node("Relu", ["conv"], ["relu"])]
+    source = "relu"
+    if concat:
+        nodes.append(helper.make_node("Concat", ["relu", "relu"], ["merged"], axis=1))
+        source = "merged"
+    nodes += [helper.make_node("MaxPool", [source], ["pooled"], kernel_shape=[3, 3],
+                              strides=[2, 2], ceil_mode=1),
+              helper.make_node("GlobalAveragePool", ["pooled"], ["average"]),
+              helper.make_node("Flatten", ["average"], ["scores"], axis=1)]
+    graph = helper.make_graph(nodes, "ceil_pool", [helper.make_tensor_value_info("image", TensorProto.FLOAT, [1, 3, 6, 8])],
+                              [helper.make_tensor_value_info("scores", TensorProto.FLOAT, [1, 8 if concat else 4])],
+                              [numpy_helper.from_array(rng.uniform(-1, 1, (4, 3, 1, 1)).astype(np.float32), "weight")])
+    source_path = tmp_path / "ceil_pool.onnx"
+    onnx.save(helper.make_model(graph, opset_imports=[helper.make_opsetid("", 18)], ir_version=9), source_path)
+    np.savez(tmp_path / "data.npz", image=rng.uniform(-2, 3, (3, 1, 3, 6, 8)).astype(np.float32))
+    output = tmp_path / "w4a8.tflite"
+    assert main([str(source_path), "-o", str(output), "--weight-dtype", "int4",
+                 "--weight-granularity", "per-channel", "--calibration", str(tmp_path / "data.npz")]) == 0
+    report = json.loads(output.with_suffix(".quantization.json").read_text())
+    changes = report["conversion_optimizations"]["maxpool_padding"]
+    assert len(changes) == 1 and changes[0]["rewrite"] == "PADV2_to_PAD"
+    assert not report["output_inventory"]["float_compute_ops"]
+    assert report["backend_details"]["precision_verification"]["checked_weight_tensors"] == 1
+    assert max(v["onnx_vs_float_tflite"]["max_abs_error"] for v in report["validation"]) < 1e-5

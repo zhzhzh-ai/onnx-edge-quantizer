@@ -6,6 +6,7 @@ __pycache__/
 build/
 dist/
 artifacts/
+output/
 tmp/
 .env
 .env.*

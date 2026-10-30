@@ -6,12 +6,12 @@ import subprocess
 import sys
 
 
-def expose_channel_last_inputs(float_path, specs):
+def expose_channel_last_inputs(float_path, specs, *, deployment_axis_order=False):
     """Absorb proven NC* -> N*C boundary adapters into the TFLite interface.
 
-    Only a sole input consumer with an explicit transpose or an equivalent
-    singleton-dimension reshape is eligible. Model computations and ONNX
-    calibration input conventions stay unchanged.
+    Absorb an existing sole boundary adapter when possible. For branching
+    NCHW inputs, expose NHWC and insert the exact inverse transpose so every
+    original consumer still sees the original data and channel axis.
     """
     import numpy as np
     from .runtime import modules, read_model, write_model
@@ -113,6 +113,71 @@ def expose_channel_last_inputs(float_path, specs):
         for signature in signatures:
             for entry in [*(signature.inputs or []), *(signature.outputs or [])]:
                 entry.tensorIndex = remap[int(entry.tensorIndex)]
+        write_model(model, float_path)
+    inserted = []
+    for input_index in map(int, graph.inputs):
+        tensor = graph.tensors[input_index]
+        name = tensor.name.decode() if isinstance(tensor.name, bytes) else tensor.name
+        spec = specs_by_name.get(name)
+        if (name in layouts or spec is None or len(spec['shape']) != 4
+                or list(tensor.shape) != spec['shape'] or input_index in graph.outputs
+                or tensor.type != schema.TensorType.FLOAT32):
+            continue
+        # Establish NC* from explicit Gather(axis=1) -> reshape(N,H,W,1)
+        # channel-extraction contracts. A rank-4 ONNX input can already be
+        # NHWC, so rank or dimension sizes alone are insufficient evidence.
+        users = [op for op in graph.operators if input_index in op.inputs]
+        proven_channel_branches = bool(users)
+        for user in users:
+            c = model.operatorCodes[user.opcodeIndex]
+            if (max(c.builtinCode, c.deprecatedBuiltinCode) != schema.BuiltinOperator.GATHER
+                    or int(user.inputs[0]) != input_index or user.builtinOptions.axis != 1):
+                proven_channel_branches = False
+                break
+            output = int(user.outputs[0])
+            followers = [op for op in graph.operators if output in op.inputs]
+            expected = [spec['shape'][0], spec['shape'][2], spec['shape'][3], 1]
+            if (len(followers) != 1 or list(graph.tensors[int(followers[0].outputs[0])].shape) != expected):
+                proven_channel_branches = False
+                break
+            fc = model.operatorCodes[followers[0].opcodeIndex]
+            if max(fc.builtinCode, fc.deprecatedBuiltinCode) != schema.BuiltinOperator.RESHAPE:
+                proven_channel_branches = False
+                break
+        if not proven_channel_branches and not deployment_axis_order:
+            continue
+        from copy import deepcopy
+        original = deepcopy(tensor)
+        original.name = (name + '/onnx_layout').encode()
+        graph.tensors.append(original)
+        original_index = len(graph.tensors) - 1
+        for op in graph.operators:
+            op.inputs = np.array([original_index if int(i) == input_index else i for i in op.inputs], dtype=np.int32)
+        buf = schema.BufferT()
+        buf.data = np.frombuffer(np.array([0, 3, 1, 2], dtype='<i4').tobytes(), dtype=np.uint8)
+        model.buffers.append(buf)
+        perm = schema.TensorT()
+        perm.name, perm.shape, perm.type, perm.buffer = (name + '/to_onnx_permutation').encode(), np.array([4], dtype=np.int32), schema.TensorType.INT32, len(model.buffers) - 1
+        graph.tensors.append(perm)
+        code = schema.OperatorCodeT()
+        code.builtinCode = code.deprecatedBuiltinCode = schema.BuiltinOperator.TRANSPOSE
+        code.version = 1
+        model.operatorCodes.append(code)
+        op = schema.OperatorT()
+        op.opcodeIndex = len(model.operatorCodes) - 1
+        op.inputs, op.outputs = np.array([input_index, len(graph.tensors) - 1], dtype=np.int32), np.array([original_index], dtype=np.int32)
+        op.builtinOptionsType, op.builtinOptions = schema.BuiltinOptions.TransposeOptions, schema.TransposeOptionsT()
+        inserted.append(op)
+        shape = list(map(int, tensor.shape))
+        tensor.shape = np.array([shape[i] for i in [0, 2, 3, 1]], dtype=np.int32)
+        if tensor.shapeSignature is not None:
+            tensor.shapeSignature = tensor.shapeSignature[[0, 2, 3, 1]]
+        layouts[name] = {'tflite_name': name, 'onnx_shape': shape,
+                         'tflite_shape': tensor.shape.tolist(),
+                         'onnx_to_tflite_permutation': [0, 2, 3, 1],
+                         'removed_adapter': None, 'inserted_adapter': 'TRANSPOSE'}
+    if inserted:
+        graph.operators = inserted + list(graph.operators)
         write_model(model, float_path)
     return layouts
 

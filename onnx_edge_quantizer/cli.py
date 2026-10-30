@@ -62,6 +62,8 @@ def parser():
     p.add_argument("--float-atol", type=float, default=1e-4)
     p.add_argument("--float-rtol", type=float, default=1e-3)
     p.add_argument("--allow-float-ops", action="store_true", help="Permit native backend to leave unsupported operations in float; report lists these operations")
+    p.add_argument("--structure-reference", type=Path,
+                   help="Require the exported graph's operators, edges, shapes and control constants to match this TFLite before publishing")
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--keep-workdir", type=Path, help="Keep conversion logs and intermediate files in a NEW directory")
     p.add_argument("--doctor", action="store_true", help="Print dependency/platform diagnostics and exit")
@@ -83,6 +85,20 @@ def _execute(args, workdir):
     from .converter import convert_onnx, converted_output_layouts, expose_channel_last_inputs
     from .runtime import calibrate, inventory, check_native_precision
     from .backends import native_export, reference_export
+    from .tflite_optimizations import (
+        normalize_maxpool_padding, normalize_deployment_graph,
+        normalize_elementwise_constants, fuse_scalar_gather_reshapes,
+        restore_pointwise_rank, commute_unary_before_reshape,
+    )
+    from .static_folding import fold_static_tensors
+    from .layout_normalization import (
+        normalize_channel_layouts, lower_nearest_resize_to_gathers,
+        collapse_transpose_chains, normalize_unit_strided_slices, lower_reference_splits,
+    )
+    from .reference_interfaces import align_terminal_output_layout
+    from .onnx_compat import lower_custom_gemm, restore_inferred_reshapes
+    from .channel_shuffle import align_channel_shuffles
+    from .padding_helpers import simplify_padding_helpers
     from .validation import validate
     model, specs = input_specs(args.model, pairs(args.input_shape, shape=True))
     samples = load_samples(args.calibration, specs, args.synthetic_samples, args.seed, args.random_min, args.random_max)
@@ -92,11 +108,45 @@ def _execute(args, workdir):
     LOG.info("Converting ONNX to FP32 TFLite")
     float_path = args.float_tflite.resolve() if args.float_tflite else convert_onnx(model, specs, workdir)
     output_layouts = converted_output_layouts(model, float_path) if not args.float_tflite else {}
-    input_layouts = (expose_channel_last_inputs(float_path, specs)
+    static_rewrites = lower_custom_gemm(float_path, model) if not args.float_tflite else []
+    if not args.float_tflite:
+        static_rewrites.extend(restore_inferred_reshapes(float_path, model))
+        static_rewrites.extend(fold_static_tensors(float_path))
+    padding_rewrites = normalize_maxpool_padding(float_path) if not args.float_tflite else []
+    structure_rewrites = normalize_deployment_graph(float_path) if not args.float_tflite else []
+    if not args.float_tflite:
+        structure_rewrites.extend(fuse_scalar_gather_reshapes(float_path))
+        structure_rewrites.extend(restore_pointwise_rank(float_path))
+        structure_rewrites.extend(simplify_padding_helpers(float_path, args.structure_reference))
+        structure_rewrites.extend(align_channel_shuffles(float_path, args.structure_reference))
+        structure_rewrites.extend(commute_unary_before_reshape(float_path, args.structure_reference))
+    input_layouts = (expose_channel_last_inputs(float_path, specs,
+                                              deployment_axis_order=bool(args.structure_reference))
                      if not args.float_tflite and not args.keep_onnx_input_layout else {})
+    layout_rewrites = []
+    if not args.float_tflite:
+        structure_rewrites.extend(normalize_unit_strided_slices(float_path))
+        layout_rewrites = normalize_channel_layouts(float_path, args.structure_reference)
+        structure_rewrites.extend(lower_reference_splits(float_path, args.structure_reference))
+        static_rewrites.extend(fold_static_tensors(float_path))
+        structure_rewrites.extend(normalize_deployment_graph(float_path))
+        if args.structure_reference:
+            structure_rewrites.extend(lower_nearest_resize_to_gathers(float_path))
+        if args.structure_reference:
+            structure_rewrites.extend(align_terminal_output_layout(
+                float_path, args.structure_reference, model, output_layouts))
+        structure_rewrites.extend(collapse_transpose_chains(float_path))
+        structure_rewrites.extend(normalize_unit_strided_slices(float_path))
+        structure_rewrites.extend(normalize_elementwise_constants(float_path))
+        structure_rewrites.extend(commute_unary_before_reshape(float_path, args.structure_reference))
     for name, layout in input_layouts.items():
-        LOG.info("TFLite input %s: %s -> %s; absorbed boundary %s", name,
-                 layout["onnx_shape"], layout["tflite_shape"], layout["removed_adapter"])
+        LOG.info("TFLite input %s: %s -> %s; layout adapter %s", name,
+                 layout["onnx_shape"], layout["tflite_shape"],
+                 layout.get("removed_adapter") or layout.get("inserted_adapter"))
+    if padding_rewrites:
+        LOG.info("Normalized %d equivalent nonnegative MaxPool padding operator(s)", len(padding_rewrites))
+    if structure_rewrites:
+        LOG.info("Applied %d deployment graph normalization(s)", len(structure_rewrites))
     LOG.info("Running FP32 inference and collecting intermediate min/max ranges")
     ranges, mapping = calibrate(float_path, specs, samples, pairs(args.input_map), input_layouts)
     if not ranges:
@@ -104,11 +154,25 @@ def _execute(args, workdir):
     candidate = workdir / "candidate.tflite"
     LOG.info("Exporting %s model (weights=%s, activations=%s)", args.mode, args.weight_dtype, args.activation_dtype)
     if args.mode == "native":
-        details = native_export(float_path, candidate, specs, samples, mapping, config)
+        details = native_export(float_path, candidate, specs, samples, mapping, config,
+                                structure_reference=args.structure_reference)
+        if args.structure_reference and args.weight_dtype == 'int4' and args.activation_dtype == 'int8':
+            from .reference_quantization import align_quantize_boundaries
+            details['reference_boundaries'] = align_quantize_boundaries(candidate, args.structure_reference)
     else:
         LOG.warning("Reference export uses FP32 storage/computation with explicit rounding and clipping; it provides no integer compression or integer acceleration")
         details = reference_export(float_path, candidate, ranges, config)
     model_inventory = inventory(candidate)
+    structure_comparison = None
+    if args.structure_reference:
+        from .structure import compare_structure
+        structure_comparison = compare_structure(candidate, args.structure_reference)
+        (workdir / 'structure_comparison.json').write_text(
+            json.dumps(structure_comparison, ensure_ascii=False, indent=2), encoding='utf-8')
+        if not structure_comparison['matched']:
+            raise ValueError(f"Deployment structure mismatch: {structure_comparison['difference_count']} differences; "
+                             f"first differences: {structure_comparison['differences'][:3]}. "
+                             "Use --keep-workdir to retain structure_comparison.json")
     if args.mode == "native":
         quantized = [t for t in model_inventory["tensors"] if t["scales"] and t["type"] in ("INT4", "INT8", "INT16")]
         if not quantized:
@@ -125,12 +189,18 @@ def _execute(args, workdir):
               "weight_granularity": config.weight_granularity, "activation_granularity": "per-tensor",
               "requested": config.__dict__, "inputs": specs, "synthetic_calibration": args.calibration is None,
               "calibration_samples": len(samples), "validation_samples": len(validation_samples),
+              "onnx_reference_graph_optimization": "disabled",
               "seed": args.seed if args.calibration is None else None,
               "activation_ranges": {str(i): {"min": lo, "max": hi} for i, (lo, hi) in ranges.items()},
               "backend_details": details, "output_inventory": model_inventory,
+              "structure_comparison": structure_comparison,
               "output_layouts": output_layouts, "input_layouts": input_layouts,
               "tflite_inputs": [{"name": d["name"], "shape": d["shape"].tolist()}
                                 for d in mapping.values()], "validation": comparisons,
+              "conversion_optimizations": {"maxpool_padding": padding_rewrites,
+                                           "static_tensors": static_rewrites,
+                                           "channel_layouts": layout_rewrites,
+                                           "deployment_structure": structure_rewrites},
               "input_onnx": str(args.model.resolve()), "output_tflite": str(args.output.resolve()),
               "output_bytes": candidate.stat().st_size,
               "warnings": (["Synthetic data does not establish real task accuracy"] if args.calibration is None else [])
@@ -167,6 +237,11 @@ def main(argv=None):
             raise ValueError("Output must have the .tflite extension")
         if args.model.resolve() == args.output.resolve() or (args.float_tflite and args.float_tflite.resolve() == args.output.resolve()):
             raise ValueError("Output must not replace a source model")
+        if args.structure_reference:
+            if not args.structure_reference.is_file():
+                raise ValueError("--structure-reference must be an existing TFLite model")
+            if args.structure_reference.resolve() == args.output.resolve():
+                raise ValueError("Output must not replace the structure reference")
         for destination in [args.output, args.output.with_suffix(".quantization.json")]:
             if destination.exists() and not args.overwrite:
                 raise ValueError(f"Output already exists: {destination}; use --overwrite")
