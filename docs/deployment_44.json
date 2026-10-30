@@ -1,0 +1,534 @@
+{
+  "total_pairs": 44,
+  "structure_passed": 44,
+  "reused_previously_completed": 42,
+  "newly_shape_specialized": 2,
+  "verification": "Actual INT4 packing and INT8 activation precision plus exact deployment structure; stock runtime execution is not required.",
+  "reference_note": "NanoDet matches a corrected integer reference; its original mixed reference is preserved.",
+  "models": [
+    {
+      "model": "Alexnet",
+      "file": "Alexnet_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 8,
+      "weight_granularity": "per-tensor",
+      "sha256": "dabeba882c0a5e9a1d4d3fa34775d4b4cfd1e72987fa895735eddbb61a61cf98",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "DeepLabV3",
+      "file": "onnx1/DeepLabV3_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 55,
+      "weight_granularity": "per-channel",
+      "sha256": "bf123c5c075a995d2dbfde81a291bc922fbcb60e0570c13b0c202fbd31095cc8",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "EfficientNet-Lite2",
+      "file": "onnx1/EfficientNet-Lite2_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 65,
+      "weight_granularity": "per-channel",
+      "sha256": "5be86d96b28bccf2772ae6f25081ef3ba5b05648c3cb6d86ffb4fab44ce45270",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "EfficientNet-Lite2",
+      "file": "onnx2/EfficientNet-Lite2/EfficientNet-Lite2_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 65,
+      "weight_granularity": "per-channel",
+      "sha256": "5be86d96b28bccf2772ae6f25081ef3ba5b05648c3cb6d86ffb4fab44ce45270",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "EfficientNet-Lite4",
+      "file": "onnx2/EfficientNet-Lite4/EfficientNet-Lite4_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 92,
+      "weight_granularity": "per-channel",
+      "sha256": "88606ed3e9ef351f60d1ad6e28f75a7291891b3e438b1d2f486891aac3e48284",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "FaceBlur",
+      "file": "onnx2/FaceBlur/FaceBlur_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 88,
+      "weight_granularity": "per-channel",
+      "sha256": "bee380d75e1604dc9553795b94554f0937d1c5fd5b884217710820ad9bd19b64",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "FaceReid",
+      "file": "onnx2/FaceReid/FaceReid_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 60,
+      "weight_granularity": "per-channel",
+      "sha256": "ea25b593f8d0f549a7d7073e62e800a4d96c42e5a68c0c59b316aeccf73b2990",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "FastSAM-s",
+      "file": "onnx2/FastSAM-s/FastSAM-s_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 77,
+      "weight_granularity": "per-channel",
+      "sha256": "0b3344d04e7afef6af9f215040f1a81cb6f095c7850a3252594c0fdb9cb43ce1",
+      "runtime_requirements": [
+        "TRANSPOSE_CONV with packed INT4 weights requires an INT4-capable kernel; the tested LiteRT CPU kernel only accepts INT8 weights"
+      ],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "FastSAM-x",
+      "file": "onnx2/FastSAM-x/FastSAM-x_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 117,
+      "weight_granularity": "per-channel",
+      "sha256": "da688e3af4a4e5b6536f64a266eba89657adfb9bd045db9a8130faf3d3ff1f11",
+      "runtime_requirements": [
+        "TRANSPOSE_CONV with packed INT4 weights requires an INT4-capable kernel; the tested LiteRT CPU kernel only accepts INT8 weights"
+      ],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "GoogleNet",
+      "file": "onnx3/GoogleNet/GoogleNet_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 58,
+      "weight_granularity": "per-channel",
+      "sha256": "6ba30f21a6d5abbd5ed9c48383892f1e25e01a84b676c0eebbad1cb770af61a4",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "HumanSegV2",
+      "file": "onnx3/HumanSegV2/HumanSegV2_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 73,
+      "weight_granularity": "per-channel",
+      "sha256": "fbaa6ded9796c64a36c3b49e918a745973ec9066fdc8ad302ee79f9236b7767e",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "MobilenetV1_1.0_224",
+      "file": "onnx4/MobilenetV1_1.0_224/MobilenetV1_1.0_224_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 28,
+      "weight_granularity": "per-channel",
+      "sha256": "df71a61bac44528ac3dea53dde884a27a15d00341e9ee02f7bf43194958fd3b8",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "MobilenetV2_1.0_224",
+      "file": "onnx4/MobilenetV2_1.0_224/MobilenetV2_1.0_224_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 53,
+      "weight_granularity": "per-channel",
+      "sha256": "0e2f57ec31a940edbb11c676e97572145c6fd77008dd5ab7dd45c451a18998ea",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "RetinaFace",
+      "file": "onnx5/RetinaFace/RetinaFace_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 82,
+      "weight_granularity": "per-channel",
+      "sha256": "d60e6840c92583d2c4cadef324edcd353c848d388e48f80fd6599ee1ca4ff112",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "SqueezeNet",
+      "file": "onnx5/SqueezeNet/SqueezeNet_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 26,
+      "weight_granularity": "per-channel",
+      "sha256": "c2ee25e6eb6c77fbdeba309557f4cdf85721d392185ddb95a772bb6b10145d79",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "Yolo-v7",
+      "file": "onnx8/Yolo-v7/Yolo-v7_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 58,
+      "weight_granularity": "per-channel",
+      "sha256": "e8fb8657fd7c63d579a9804c4892ed1fdb1bf3d09e5205cd3723c4a568c2d3bd",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "centerface",
+      "file": "onnx1/centerface_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 63,
+      "weight_granularity": "per-channel",
+      "sha256": "5c7b89a128976ece7bbb0d4feea6338ae74671355566c9193ea5b66de4488b99",
+      "runtime_requirements": [
+        "TRANSPOSE_CONV with packed INT4 weights requires an INT4-capable kernel; the tested LiteRT CPU kernel only accepts INT8 weights"
+      ],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "inception_v2-9",
+      "file": "onnx3/inception_v2-9/inception_v2-9_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 70,
+      "weight_granularity": "per-channel",
+      "sha256": "52666fc5590ce1bb8e03ef108fd9b80956895853f00fd80405a7d695eab2eea5",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "inception_v3_Opset18",
+      "file": "onnx3/inception_v3_Opset18/inception_v3_Opset18_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 95,
+      "weight_granularity": "per-channel",
+      "sha256": "24fc23b68b8293c3d27f5e75850b769b147e6546cea9ab2de6e1bbd3a9829688",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "inception_v4_Opset18",
+      "file": "onnx3/inception_v4_Opset18/inception_v4_Opset18_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 150,
+      "weight_granularity": "per-channel",
+      "sha256": "aa97ee0485933f5fcaf74866e1449cfea0dd8d3957188fd93d8957612155ae93",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "nanodet-plus-m-1.5x_320",
+      "file": "onnx4/nanodet-plus-m-1.5x_320/nanodet-plus-m-1.5x_320_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 110,
+      "weight_granularity": "per-channel",
+      "sha256": "be9287872afcc593617c0c14a5b898740862175fe28cc6fa362ef4098b2b8a24",
+      "runtime_requirements": [],
+      "reference_kind": "integerized_W8A8_copy",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "resnet101_Opset18",
+      "file": "onnx4/resnet101_Opset18/resnet101_Opset18_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 105,
+      "weight_granularity": "per-channel",
+      "sha256": "b823b0fb706a87d7d026be4fcff6348fe6e56148b5a9705eaf26544adf4edf81",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "resnet152_Opset18",
+      "file": "onnx5/resnet152_Opset18/resnet152_Opset18_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 156,
+      "weight_granularity": "per-channel",
+      "sha256": "1b2efe4ba5acb4b48569301c09cdd7f7d225874b7e58ea3ae67f7177516bd590",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "resnet50_Opset18",
+      "file": "onnx4/resnet50_Opset18/resnet50_Opset18_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 54,
+      "weight_granularity": "per-channel",
+      "sha256": "32596a3e7e097a93323f092069c1b2dd2791b5fd9adcef128ec87818bb47573e",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "resnet50_Opset18_299",
+      "file": "onnx4/resnet50_Opset18_299/resnet50_Opset18_299_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 54,
+      "weight_granularity": "per-channel",
+      "sha256": "32596a3e7e097a93323f092069c1b2dd2791b5fd9adcef128ec87818bb47573e",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "resnetv2_101_Opset18",
+      "file": "onnx5/resnetv2_101_Opset18/resnetv2_101_Opset18_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 105,
+      "weight_granularity": "per-channel",
+      "sha256": "7523c5ccc0aeabd683a2fd040ade8d3cbc6d29ae7ec1ef91b6cb2493fc0e53d9",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "resnetv2_50_Opset18",
+      "file": "onnx5/resnetv2_50_Opset18/resnetv2_50_Opset18_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 54,
+      "weight_granularity": "per-channel",
+      "sha256": "45d706b4365b1a35c3ac1cbbb880f27b2402753c88b169fd8949ae7e08540f4d",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "shufflenet_v2_x2_0_Opset17",
+      "file": "onnx5/shufflenet_v2_x2_0_Opset17/shufflenet_v2_x2_0_Opset17_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 57,
+      "weight_granularity": "per-channel",
+      "sha256": "df381bd5c922f969bb272f24b66c5464f7244aa2c27569477566e749989cca2f",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "vgg16_Opset18",
+      "file": "onnx7/vgg16_Opset18/vgg16_Opset18_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 16,
+      "weight_granularity": "per-channel",
+      "sha256": "dd28221fb5011dd8fe84cd2e4af058228552ddc4977f819c485a8f3cbe4d0a21",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "vgg19_Opset18",
+      "file": "onnx7/vgg19_Opset18/vgg19_Opset18_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 19,
+      "weight_granularity": "per-channel",
+      "sha256": "14569dcab9cfda4e1f344bbe561ec590e669e13d37dfa049d210f03aa95d5f12",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "yolo-fastestv2",
+      "file": "onnx8/yolo-fastestv2/yolo-fastestv2_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 79,
+      "weight_granularity": "per-channel",
+      "sha256": "8290bcc747d210ea108947f9d807e71827641d02b6b6add2f8103d71f4bcee4f",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "yolov3-tinyu",
+      "file": "onnx8/yolov3-tinyu/yolov3-tinyu_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 24,
+      "weight_granularity": "per-channel",
+      "sha256": "62e6dbb42ef497f26490b8c266c6bed2b31018072e172c8d57c6981435858ecb",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "yolov3-tinyu",
+      "file": "onnx8/yolov3-tinyu_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 24,
+      "weight_granularity": "per-channel",
+      "sha256": "62e6dbb42ef497f26490b8c266c6bed2b31018072e172c8d57c6981435858ecb",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "yolov3u",
+      "file": "onnx8/yolov3u/yolov3u_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 91,
+      "weight_granularity": "per-channel",
+      "sha256": "03327f1d5421846eb288f11a848fc43e091df98541f37492b93140812de7a571",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "yolov5nu",
+      "file": "onnx8/yolov5nu/yolov5nu_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 76,
+      "weight_granularity": "per-channel",
+      "sha256": "4e2142f546db5574afa98222ce1bfece4817cd1fe24de72ad68f0809cb1e2789",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "yolov5su",
+      "file": "onnx8/yolov5su/yolov5su_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 76,
+      "weight_granularity": "per-channel",
+      "sha256": "2d0c9cde5d6c686f20cf8f9fd61b297ca626bc74ca15610731df17ede06263e6",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "yolov8m",
+      "file": "onnx9/yolov8m/yolov8m_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 84,
+      "weight_granularity": "per-channel",
+      "sha256": "3ef2ad61f83245d92c1982e722edc8e86d9d3246e71fd0ff0ea76b55cb0b7912",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "yolov8m-cls",
+      "file": "onnx9/yolov8m-cls/yolov8m-cls_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 39,
+      "weight_granularity": "per-channel",
+      "sha256": "7f49e637f3d020c38039482bd47eeb74963972bca87c380863238a3f1aea959a",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "yolov8m-pose",
+      "file": "onnx9/yolov8m-pose/yolov8m-pose_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 93,
+      "weight_granularity": "per-channel",
+      "sha256": "e2ea9221fb2e85f212180788e14586f2be1d3f13f083cd51c93348a8e4309239",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "yolov8m-seg",
+      "file": "onnx9/yolov8m-seg/yolov8m-seg_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 97,
+      "weight_granularity": "per-channel",
+      "sha256": "f8e3e05fcb3647a529a8d7021842e79e515ccc56e8bc2c49145100885a39b506",
+      "runtime_requirements": [
+        "TRANSPOSE_CONV with packed INT4 weights requires an INT4-capable kernel; the tested LiteRT CPU kernel only accepts INT8 weights"
+      ],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "yolov9e-seg",
+      "file": "onnx9/yolov9e-seg/yolov9e-seg_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 275,
+      "weight_granularity": "per-channel",
+      "sha256": "4de2a660f49c2d68d5f171ccbe5d06f8f0c0d9b5b0f3611ac0b56b03486620e5",
+      "runtime_requirements": [
+        "TRANSPOSE_CONV with packed INT4 weights requires an INT4-capable kernel; the tested LiteRT CPU kernel only accepts INT8 weights"
+      ],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "yolov9t",
+      "file": "onnx9/yolov9t/yolov9t_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 186,
+      "weight_granularity": "per-channel",
+      "sha256": "6e2a3e0af627deeacb2f338fb0ce93cfac21e0983a20fdb241581dda54931b6b",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": true
+    },
+    {
+      "model": "yolox_nano",
+      "file": "onnx10/yolox_nano/yolox_nano_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 113,
+      "weight_granularity": "per-channel",
+      "sha256": "970ab659fcdbb02dd341a3704f28cffde052990b3c0d789da0a66eb67171bbaa",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": false,
+      "input_shape_specialization": {
+        "original_input_shape": [
+          1,
+          3,
+          416,
+          416
+        ],
+        "specialized_input_shape": [
+          1,
+          3,
+          224,
+          224
+        ],
+        "operators_and_constants_unchanged": true
+      }
+    },
+    {
+      "model": "yolox_tiny",
+      "file": "onnx10/yolox_tiny/yolox_tiny_w4a8.tflite",
+      "structure_matched": true,
+      "int4_weight_tensors": 83,
+      "weight_granularity": "per-channel",
+      "sha256": "3eea8f58f0129cb2c9931129d9311b17c322734e498ca177a292391c8cebe453",
+      "runtime_requirements": [],
+      "reference_kind": "original_W8A8",
+      "reused_previously_completed": false,
+      "input_shape_specialization": {
+        "original_input_shape": [
+          1,
+          3,
+          416,
+          416
+        ],
+        "specialized_input_shape": [
+          1,
+          3,
+          224,
+          224
+        ],
+        "operators_and_constants_unchanged": true
+      }
+    }
+  ]
+}

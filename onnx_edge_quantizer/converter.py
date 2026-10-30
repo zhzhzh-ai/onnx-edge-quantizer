@@ -198,6 +198,41 @@ def converted_output_layouts(model, float_path):
     if report.get("schema_version") != 1:
         raise ValueError("Unsupported onnx2tf tensor correspondence report version")
     outputs = {value.name: len(value.type.tensor_type.shape.dim) for value in model.graph.output}
+    source_nodes = {name: node for node in model.graph.node for name in node.output}
+    tflite_producers = None
+
+    def unary_layout_contract(name, tflite_name):
+        nonlocal tflite_producers
+        from .runtime import read_model, modules
+        if tflite_producers is None:
+            converted = read_model(float_path)
+            _, schema = modules()
+            names = {value: key for key, value in vars(schema.BuiltinOperator).items() if isinstance(value, int)}
+            graph = converted.subgraphs[0]
+            tflite_producers = {}
+            for op in graph.operators:
+                c = converted.operatorCodes[op.opcodeIndex]
+                kind = names.get(max(c.builtinCode, c.deprecatedBuiltinCode))
+                for index in op.outputs:
+                    tflite_producers[graph.tensors[int(index)].name.decode()] = (kind, op, graph)
+        node, target = source_nodes.get(name), tflite_producers.get(tflite_name)
+        unary = {('Sigmoid', 'LOGISTIC'), ('Relu', 'RELU'),
+                 ('LeakyRelu', 'LEAKY_RELU'), ('Tanh', 'TANH')}
+        anchors = {('Conv', 'CONV_2D'), ('Conv', 'DEPTHWISE_CONV_2D'),
+                   ('ConvTranspose', 'TRANSPOSE_CONV'),
+                   ('AveragePool', 'AVERAGE_POOL_2D'), ('MaxPool', 'MAX_POOL_2D')}
+        crossed = False
+        while node is not None and target is not None:
+            kind, op, graph = target
+            if (node.op_type, kind) in anchors:
+                return crossed
+            if (node.op_type, kind) not in unary or len(node.input) != 1 or len(op.inputs) != 1:
+                return False
+            crossed = True
+            node = source_nodes.get(node.input[0])
+            target = tflite_producers.get(graph.tensors[int(op.inputs[0])].name.decode())
+        return False
+
     layouts = {}
     for record in report.get("records", []):
         name = record.get("onnx_output_name")
@@ -210,6 +245,10 @@ def converted_output_layouts(model, float_path):
         ) in {("Conv", "CONV_2D"), ("Conv", "DEPTHWISE_CONV_2D"),
               ("ConvTranspose", "TRANSPOSE_CONV"),
               ("AveragePool", "AVERAGE_POOL_2D"), ("MaxPool", "MAX_POOL_2D")}
+        if (rank == 4 and not operator_layout_change and record.get('is_graph_output')
+                and record.get('exists_in_final_model') and record.get('onnx_op_type')
+                in ('Sigmoid', 'Relu', 'LeakyRelu', 'Tanh')):
+            operator_layout_change = unary_layout_contract(name, record['resolved_tflite_tensor_name'])
         if (rank not in (3, 4, 5) or not record.get("is_graph_output")
                 or not record.get("exists_in_final_model")
                 or not (record.get("assume_channel_last_layout") is True or operator_layout_change)):

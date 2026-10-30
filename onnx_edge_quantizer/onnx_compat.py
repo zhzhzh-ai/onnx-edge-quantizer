@@ -8,6 +8,66 @@ from .runtime import modules, read_model, write_model
 from .tflite_optimizations import compact_model
 
 
+def restore_concat_axes(path, onnx_model):
+    """Recover original axes only for directly mapped, unchanged-layout inputs."""
+    report_path = path.with_name(path.stem.removesuffix('_float32') + '_tensor_correspondence_report.json')
+    if not report_path.is_file():
+        return []
+    rows = json.loads(report_path.read_text())['records']
+    by_onnx = {}
+    for row in rows:
+        if row.get('exists_in_final_model'):
+            name = row.get('onnx_output_name', '')
+            by_onnx[name] = row
+            if name.startswith('wa/'):
+                by_onnx.setdefault(name[2:], row)
+    nodes = {output: node for node in onnx_model.graph.node if node.op_type == 'Concat' for output in node.output}
+    model = read_model(path)
+    _, s = modules()
+    changes = []
+    for graph in model.subgraphs:
+        for op in graph.operators:
+            code = model.operatorCodes[op.opcodeIndex]
+            if max(code.builtinCode, code.deprecatedBuiltinCode) != s.BuiltinOperator.CONCATENATION:
+                continue
+            tensor = graph.tensors[int(op.outputs[0])]
+            matches = [(name, node, by_onnx[name]) for name, node in nodes.items()
+                       if name in by_onnx and by_onnx[name]['resolved_tflite_tensor_name'] == tensor.name.decode()]
+            if len(matches) != 1:
+                continue
+            name, node, row = matches[0]
+            if row.get('assume_channel_last_layout') is not False or len(node.input) != len(op.inputs):
+                continue
+            inputs = [graph.tensors[int(i)] for i in op.inputs]
+            if any(input_name not in by_onnx
+                   or by_onnx[input_name].get('assume_channel_last_layout') is not False
+                   or by_onnx[input_name]['resolved_tflite_tensor_name'] != t.name.decode()
+                   for input_name, t in zip(node.input, inputs)):
+                continue
+            shapes = [list(t.shape) if t.shape is not None else [] for t in inputs]
+            rank = len(shapes[0])
+            axis = next((int(a.i) for a in node.attribute if a.name == 'axis'), None)
+            if rank != 4 or axis is None or not -rank <= axis < rank:
+                continue
+            axis %= rank
+            if op.builtinOptions.axis % rank == axis:
+                continue
+            if any(len(shape) != rank or any(shape[j] != shapes[0][j] for j in range(rank) if j != axis)
+                   for shape in shapes):
+                continue
+            target = shapes[0].copy()
+            target[axis] = sum(shape[axis] for shape in shapes)
+            previous = int(op.builtinOptions.axis)
+            op.builtinOptions.axis = axis
+            tensor.shape, tensor.shapeSignature = np.array(target, np.int32), None
+            changes.append({'rewrite': 'restore_onnx_concat_axis', 'output': name,
+                            'previous_axis': previous, 'axis': axis,
+                            'evidence': 'direct_correspondence_unchanged_input_layouts'})
+    if changes:
+        write_model(model, path)
+    return changes
+
+
 def restore_inferred_reshapes(path, onnx_model):
     """Recover original -1 shape controls replaced by stale ONNX annotations."""
     import onnx

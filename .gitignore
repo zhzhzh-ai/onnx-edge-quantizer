@@ -10,3 +10,5 @@ output/
 tmp/
 .env
 .env.*
+/sym_shape_infer_temp.onnx
+/*.data

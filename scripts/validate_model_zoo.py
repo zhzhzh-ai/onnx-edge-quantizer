@@ -11,7 +11,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
-def dynamic_input_flags(onnx_path, reference):
+class InputShapeMismatch(ValueError):
+    """The paired models have incompatible fixed deployment inputs."""
+
+
+def dynamic_input_flags(onnx_path, reference, *, check_fixed=False):
     """Use explicit reference interface plus the deployment axis convention."""
     import onnx
     from onnx_edge_quantizer.runtime import read_model
@@ -23,14 +27,20 @@ def dynamic_input_flags(onnx_path, reference):
     for i, tensor in enumerate(inputs):
         shape = [int(d.dim_value) if d.HasField('dim_value') else None
                  for d in tensor.type.tensor_type.shape.dim]
-        if all(d is not None and d > 0 for d in shape):
+        fixed = all(d is not None and d > 0 for d in shape)
+        if fixed and not check_fixed:
             continue
         if len(inputs) != 1 or len(graph.inputs) != 1:
+            if fixed:
+                continue
             raise ValueError('Dynamic multi-input models require explicit shape/name mappings')
         deployment = graph.tensors[int(graph.inputs[i])].shape.tolist()
         expected = [deployment[j] for j in [0, 3, 1, 2]] if len(shape) == 4 else deployment
         if len(shape) != len(expected) or any(d is not None and d > 0 and d != e for d, e in zip(shape, expected)):
-            raise ValueError('Reference input shape is incompatible with the ONNX/deployment axis contract')
+            raise InputShapeMismatch(f'Input shape mismatch: ONNX {tensor.name} {shape}, '
+                                     f'reference deployment {deployment} (ONNX axes {expected})')
+        if fixed:
+            continue
         flags.extend(['--input-shape', tensor.name + '=' + ','.join(map(str, expected))])
     return flags
 
@@ -65,12 +75,15 @@ def main():
     parser.add_argument('--workers', type=int, default=1)
     parser.add_argument('--timeout', type=int, default=300)
     parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--validation-mode', choices=['full', 'structure'], default='full')
+    parser.add_argument('--skip-input-shape-mismatch', action='store_true')
+    parser.add_argument('--reference-padding-policy', choices=['preserve', 'baseline'], default='preserve')
     args = parser.parse_args()
     pairs = discover(args.onnx_root.resolve(), args.reference_root.resolve())
     if args.failed_from:
         previous = json.loads(args.failed_from.read_text(encoding='utf-8'))
         failed = {str(Path(item['reference']).resolve()) for item in previous['models']
-                  if item['status'] != 'passed'}
+                  if item['status'] not in ('passed', 'structure_passed', 'skipped_input_shape')}
         pairs = [pair for pair in pairs if str(pair[2].resolve()) in failed]
     if args.models:
         selected = {n.casefold() for n in args.models}
@@ -95,17 +108,23 @@ def main():
         log = folder / f'{name}.log'
         command = [sys.executable, '-m', 'onnx_edge_quantizer', str(onnx), '-o', str(output),
                    '--weight-dtype', 'int4', '--weight-granularity', 'per-channel',
-                   '--structure-reference', str(reference), '--keep-workdir', str(work), '--overwrite']
+                   '--structure-reference', str(reference), '--keep-workdir', str(work), '--overwrite',
+                   '--validation-mode', args.validation_mode,
+                   '--reference-padding-policy', args.reference_padding_policy]
         start = time.monotonic()
         try:
-            command.extend(dynamic_input_flags(onnx, reference))
+            command.extend(dynamic_input_flags(onnx, reference, check_fixed=args.skip_input_shape_mismatch))
             with log.open('w') as stream:
                 process = subprocess.run(command, cwd=ROOT, stdout=stream, stderr=subprocess.STDOUT,
                                          timeout=args.timeout)
             record['exit_code'] = process.returncode
-            record['status'] = 'passed' if process.returncode == 0 else 'failed'
+            record['status'] = ('structure_passed' if args.validation_mode == 'structure' else 'passed') if process.returncode == 0 else 'failed'
         except subprocess.TimeoutExpired:
             record['status'] = 'timeout'
+        except InputShapeMismatch as error:
+            record['status'] = 'skipped_input_shape' if args.skip_input_shape_mismatch else 'failed'
+            record['skip_reason'] = str(error) if args.skip_input_shape_mismatch else None
+            log.write_text(str(error), encoding='utf-8')
         except (ValueError, OSError) as error:
             record['status'] = 'failed'
             log.write_text(str(error), encoding='utf-8')
@@ -114,10 +133,12 @@ def main():
         comparison = work / 'structure_comparison.json'
         if comparison.is_file():
             record['structure'] = json.loads(comparison.read_text())
-        if record['status'] == 'passed':
+        if record['status'] in ('passed', 'structure_passed'):
             report = json.loads(output.with_suffix('.quantization.json').read_text())
             record['precision'] = report['backend_details']['precision_verification']
             record['validation'] = report['validation']
+            record['runtime_validation'] = report['runtime_validation']
+            record['runtime_requirements'] = report['backend_details'].get('runtime_requirements', [])
         else:
             record['error_tail'] = log.read_text(errors='replace')[-3000:]
         return record
@@ -130,11 +151,14 @@ def main():
             records.append(record)
             summary = {'models': sorted(records, key=lambda r: (r['model'], r['reference'])),
                        'passed': sum(r['status'] == 'passed' for r in records),
+                       'structure_passed': sum(r['status'] == 'structure_passed' for r in records),
+                       'skipped_input_shape': sum(r['status'] == 'skipped_input_shape' for r in records),
+                       'validation_mode': args.validation_mode,
                        'total': len(pairs)}
             # Persist after every model so interrupted sweeps remain reviewable.
             (args.output_dir / 'validation_summary.json').write_text(json.dumps(summary, indent=2), encoding='utf-8')
             print(f"{record['status']}: {record['model']}", flush=True)
-    return 0 if args.dry_run or all(r['status'] == 'passed' for r in records) else 1
+    return 0 if args.dry_run or all(r['status'] in ('passed', 'structure_passed', 'skipped_input_shape') for r in records) else 1
 
 
 if __name__ == '__main__':

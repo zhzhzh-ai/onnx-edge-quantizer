@@ -35,6 +35,33 @@ def write_model(model, path):
     path.write_bytes(bytes(builder.Output()))
 
 
+def restore_output_names(path, float_path):
+    """Keep source public names when AEQ appends an output Quantize tensor."""
+    model, source = read_model(path), read_model(float_path)
+    signatures = {sig.signatureKey: sig for sig in source.signatureDefs or []}
+    changes = []
+    for sig in model.signatureDefs or []:
+        original = signatures.get(sig.signatureKey)
+        if original is None:
+            continue
+        graph, reference = model.subgraphs[sig.subgraphIndex], source.subgraphs[original.subgraphIndex]
+        names = {entry.name: reference.tensors[int(entry.tensorIndex)].name for entry in original.outputs or []}
+        for entry in sig.outputs or []:
+            wanted = names.get(entry.name)
+            index = int(entry.tensorIndex)
+            tensor = graph.tensors[index]
+            if wanted is None or index not in graph.outputs or wanted == tensor.name:
+                continue
+            for i, other in enumerate(graph.tensors):
+                if i != index and other.name == wanted:
+                    other.name = wanted + f'/before_output_quantization_{i}'.encode()
+            tensor.name = wanted
+            changes.append({'rewrite': 'restore_public_output_name', 'name': wanted.decode()})
+    if changes:
+        write_model(model, path)
+    return changes
+
+
 def make_interpreter(path, preserve=False):
     module, _ = modules()
     instance = module.Interpreter(
@@ -179,8 +206,30 @@ def inventory(path):
     model = read_model(path)
     type_names = {value: key for key, value in vars(schema.TensorType).items() if isinstance(value, int)}
     op_names = {value: key for key, value in vars(schema.BuiltinOperator).items() if isinstance(value, int)}
-    tensors, float_ops = [], []
+    tensors, float_ops, index_casts = [], [], []
     for gi, graph in enumerate(model.subgraphs):
+        producers = {int(i): op for op in graph.operators for i in op.outputs}
+        consumers = {}
+        for op in graph.operators:
+            for i in op.inputs:
+                consumers.setdefault(int(i), []).append(op)
+
+        def code_of(op):
+            code = model.operatorCodes[op.opcodeIndex]
+            return max(code.builtinCode, code.deprecatedBuiltinCode)
+
+        def integer_index(index, seen=None):
+            seen = set() if seen is None else seen
+            if index in seen or graph.tensors[index].type not in (schema.TensorType.INT32, schema.TensorType.INT64):
+                return False
+            seen.add(index)
+            parent = producers.get(index)
+            if parent is None:
+                return False
+            if code_of(parent) in (schema.BuiltinOperator.ARG_MAX, schema.BuiltinOperator.ARG_MIN):
+                return graph.tensors[int(parent.inputs[0])].type in (schema.TensorType.INT8, schema.TensorType.UINT8)
+            return (code_of(parent) == schema.BuiltinOperator.CAST
+                    and integer_index(int(parent.inputs[0]), seen))
         for ti, tensor in enumerate(graph.tensors):
             qp = tensor.quantization
             tensors.append({"subgraph": gi, "index": ti, "name": tensor.name.decode() if isinstance(tensor.name, bytes) else tensor.name,
@@ -193,10 +242,17 @@ def inventory(path):
             builtin = max(code.builtinCode, code.deprecatedBuiltinCode)
             if builtin in (schema.BuiltinOperator.QUANTIZE, schema.BuiltinOperator.DEQUANTIZE):
                 continue
+            if (builtin == schema.BuiltinOperator.CAST and integer_index(int(op.inputs[0]))
+                    and graph.tensors[int(op.outputs[0])].type == schema.TensorType.FLOAT32
+                    and all(code_of(user) == schema.BuiltinOperator.QUANTIZE
+                            for user in consumers.get(int(op.outputs[0]), []))):
+                index_casts.append({'subgraph': gi, 'op': 'CAST', 'outputs': [int(i) for i in op.outputs],
+                                    'role': 'integer_index_output_conversion'})
+                continue
             if any(i >= 0 and graph.tensors[i].type == schema.TensorType.FLOAT32 for i in list(op.inputs) + list(op.outputs)):
                 float_ops.append({"subgraph": gi, "op": op_names.get(builtin, str(builtin)),
                                   "outputs": [int(i) for i in op.outputs]})
-    return {"tensors": tensors, "float_compute_ops": float_ops}
+    return {"tensors": tensors, "float_compute_ops": float_ops, "index_output_casts": index_casts}
 
 
 def weight_channel_axis(builtin, position, rank, options=None):

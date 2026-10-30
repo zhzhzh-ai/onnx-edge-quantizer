@@ -38,6 +38,9 @@ def graph_contract(path):
         s.BuiltinOperator.STRIDED_SLICE: {1, 2, 3},
         s.BuiltinOperator.SPLIT: {0}, s.BuiltinOperator.SPLIT_V: {1, 2},
         s.BuiltinOperator.RESIZE_BILINEAR: {1}, s.BuiltinOperator.RESIZE_NEAREST_NEIGHBOR: {1},
+        s.BuiltinOperator.TRANSPOSE_CONV: {0},
+        s.BuiltinOperator.REDUCE_MAX: {1}, s.BuiltinOperator.REDUCE_MIN: {1},
+        s.BuiltinOperator.ARG_MAX: {1}, s.BuiltinOperator.ARG_MIN: {1},
     }
     graphs = []
     for graph in model.subgraphs:
@@ -82,6 +85,11 @@ def graph_contract(path):
                                     item['value'] = requested
                 inputs.append(item)
             options = _plain(op.builtinOptions) or {}
+            if builtin == s.BuiltinOperator.CAST:
+                # Some converters omit CastOptions; the runtime obtains both
+                # dtypes from tensors. Compare that actual contract instead.
+                options = {'inDataType': int(graph.tensors[int(op.inputs[0])].type),
+                           'outDataType': int(graph.tensors[int(op.outputs[0])].type)}
             if builtin == s.BuiltinOperator.RESHAPE and len(op.inputs) > 1:
                 options.pop('newShape', None)  # Shape input takes precedence.
             if builtin in (s.BuiltinOperator.CONV_2D, s.BuiltinOperator.DEPTHWISE_CONV_2D,

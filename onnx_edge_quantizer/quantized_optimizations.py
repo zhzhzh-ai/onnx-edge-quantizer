@@ -7,6 +7,72 @@ from .runtime import modules, read_model, write_model
 from .tflite_optimizations import compact_model
 
 
+def restore_integer_reductions(path):
+    """Reduce monotone affine INT8 codes directly, without a DQ/float/Q island."""
+    model = read_model(path)
+    _, s = modules()
+    if len(model.subgraphs) != 1:
+        return []
+    graph = model.subgraphs[0]
+    producers = {int(i): op for op in graph.operators for i in op.outputs}
+    users = {}
+    for op in graph.operators:
+        for i in op.inputs:
+            users.setdefault(int(i), []).append(op)
+
+    def kind(op):
+        c = model.operatorCodes[op.opcodeIndex]
+        return max(c.builtinCode, c.deprecatedBuiltinCode)
+
+    removed, candidates, changes = set(), {}, []
+    for op in graph.operators:
+        code = kind(op)
+        if code not in (s.BuiltinOperator.ARG_MAX, s.BuiltinOperator.ARG_MIN,
+                        s.BuiltinOperator.REDUCE_MAX, s.BuiltinOperator.REDUCE_MIN):
+            continue
+        original = int(op.inputs[0])
+        dq = producers.get(original)
+        if dq is None or kind(dq) != s.BuiltinOperator.DEQUANTIZE:
+            continue
+        source = int(dq.inputs[0])
+        tensor = graph.tensors[source]
+        qp = tensor.quantization
+        if (tensor.type != s.TensorType.INT8 or qp is None or qp.scale is None
+                or len(qp.scale) != 1 or qp.zeroPoint is None or len(qp.zeroPoint) != 1
+                or not np.isfinite(qp.scale[0]) or qp.scale[0] <= 0):
+            continue
+        if code in (s.BuiltinOperator.REDUCE_MAX, s.BuiltinOperator.REDUCE_MIN):
+            output = int(op.outputs[0])
+            consumers = users.get(output, [])
+            if (output in graph.outputs or not consumers
+                    or any(kind(q) != s.BuiltinOperator.QUANTIZE for q in consumers)):
+                continue
+            q = consumers[0]
+            target = int(q.outputs[0])
+            encoding = graph.tensors[target].quantization
+            if (graph.tensors[target].type != s.TensorType.INT8 or encoding is None
+                    or not np.array_equal(qp.scale, encoding.scale)
+                    or not np.array_equal(qp.zeroPoint, encoding.zeroPoint)):
+                continue
+            op.outputs = np.array([target], np.int32)
+            removed.add(id(q))
+            for other in consumers[1:]:
+                other.inputs = np.array([target], np.int32)
+        op.inputs[0] = source
+        model.operatorCodes[op.opcodeIndex].version = max(model.operatorCodes[op.opcodeIndex].version, 2)
+        candidates[id(dq)] = dq
+        changes.append({'rewrite': 'native_int8_order_reduction', 'operator': int(code),
+                        'encoding_preserved': True})
+    if changes:
+        referenced = {int(i) for op in graph.operators if id(op) not in removed for i in op.inputs}
+        removed.update(key for key, dq in candidates.items()
+                       if int(dq.outputs[0]) not in referenced and int(dq.outputs[0]) not in graph.outputs)
+        graph.operators = [op for op in graph.operators if id(op) not in removed]
+        compact_model(model)
+        write_model(model, path)
+    return changes
+
+
 def restore_integer_leaky_relu(path):
     """Use LiteRT's native INT8 LeakyRelu instead of a float DQ/op/Q island."""
     model = read_model(path)

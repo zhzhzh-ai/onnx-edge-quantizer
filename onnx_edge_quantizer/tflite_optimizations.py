@@ -6,7 +6,7 @@ import numpy as np
 from .runtime import modules, read_model, write_model
 
 
-def normalize_deployment_graph(path):
+def normalize_deployment_graph(path, reference=None):
     """Canonical float graph for static integer deployment, before calibration.
 
     Commute independent scalar channel affine transforms through concatenation,
@@ -19,6 +19,32 @@ def normalize_deployment_graph(path):
         return []
     g = model.subgraphs[0]
     changes, removed = [], set()
+    identity_resize_shapes = set()
+    if reference is not None:
+        baseline = read_model(reference)
+        ref = baseline.subgraphs[0]
+        producers = {int(i): op for op in ref.operators for i in op.outputs}
+        for second in ref.operators:
+            first = producers.get(int(second.inputs[0])) if len(second.inputs) else None
+            pair = [first, second]
+            if first is None:
+                continue
+            valid = True
+            for axis, gather in zip((1, 2), pair):
+                code = baseline.operatorCodes[gather.opcodeIndex]
+                if (max(code.builtinCode, code.deprecatedBuiltinCode) != s.BuiltinOperator.GATHER
+                        or gather.builtinOptions.axis != axis or gather.builtinOptions.batchDims != 0):
+                    valid = False
+                    break
+                tensor = ref.tensors[int(gather.inputs[1])]
+                raw = baseline.buffers[tensor.buffer].data
+                shape = ref.tensors[int(gather.inputs[0])].shape
+                if (shape is None or len(shape) != 4 or tensor.type != s.TensorType.INT32 or raw is None
+                        or not np.array_equal(np.frombuffer(bytes(raw), '<i4'), np.arange(shape[axis]))):
+                    valid = False
+                    break
+            if valid:
+                identity_resize_shapes.add(tuple(ref.tensors[int(first.inputs[0])].shape))
 
     pad_code = next((i for i, entry in enumerate(model.operatorCodes)
                      if max(entry.builtinCode, entry.deprecatedBuiltinCode) == s.BuiltinOperator.PAD), None)
@@ -49,6 +75,10 @@ def normalize_deployment_graph(path):
         entry = model.operatorCodes[op.opcodeIndex]
         if max(entry.builtinCode, entry.deprecatedBuiltinCode) not in (
                 s.BuiltinOperator.RESIZE_BILINEAR, s.BuiltinOperator.RESIZE_NEAREST_NEIGHBOR):
+            continue
+        if (max(entry.builtinCode, entry.deprecatedBuiltinCode) == s.BuiltinOperator.RESIZE_NEAREST_NEIGHBOR
+                and g.tensors[int(op.inputs[0])].shape is not None
+                and tuple(g.tensors[int(op.inputs[0])].shape) in identity_resize_shapes):
             continue
         source, target = int(op.inputs[0]), int(op.outputs[0])
         size = g.tensors[int(op.inputs[1])]

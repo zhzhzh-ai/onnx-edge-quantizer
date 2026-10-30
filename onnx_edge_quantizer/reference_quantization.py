@@ -63,13 +63,29 @@ def align_quantize_boundaries(path, reference):
 
     def is_quantize(m, op):
         code = m.operatorCodes[op.opcodeIndex]
-        return max(code.builtinCode, code.deprecatedBuiltinCode) == s.BuiltinOperator.QUANTIZE
+        # Float/index output conversions belong to the core graph. Only
+        # integer-to-integer requantization boundaries can be reproduced as
+        # identity encodings after proving the remaining graph is identical.
+        graph = m.subgraphs[0]
+        return (max(code.builtinCode, code.deprecatedBuiltinCode) == s.BuiltinOperator.QUANTIZE
+                and all(graph.tensors[int(i)].type in (s.TensorType.INT8, s.TensorType.UINT8)
+                        for i in [op.inputs[0], op.outputs[0]]))
 
     g, ref = model.subgraphs[0], baseline.subgraphs[0]
     if any(is_quantize(model, op) for op in g.operators):
         return []
     boundaries = [op for op in ref.operators if is_quantize(baseline, op)]
-    if not boundaries or any(int(op.outputs[0]) in ref.outputs for op in boundaries):
+    if not boundaries:
+        trial = deepcopy(model)
+        compact_model(trial)
+        compact_model(baseline)
+        count = _align_broadcast_shapes(trial, baseline)
+        if count and graph_contract(trial) == graph_contract(baseline):
+            write_model(trial, path)
+            return [{'rewrite': 'equivalent_reference_broadcast_shapes', 'count': count,
+                     'core_graph_verified': True}]
+        return []
+    if any(int(op.outputs[0]) in ref.outputs for op in boundaries):
         return []
     if any(ref.tensors[int(i)].type not in (s.TensorType.INT8, s.TensorType.UINT8)
            for op in boundaries for i in [op.inputs[0], op.outputs[0]]):

@@ -62,9 +62,10 @@ def static_w4a8_export(source, destination, specs, samples, mapping, config, *, 
     """
     details = _aeq_export(source, destination, specs, samples, mapping,
                           replace(config, weight_dtype='int8'))
-    from .quantized_optimizations import satisfy_quantization_constraints, restore_integer_leaky_relu
+    from .quantized_optimizations import satisfy_quantization_constraints, restore_integer_leaky_relu, restore_integer_reductions
     from .layout_normalization import coalesce_slice_partitions
     concat_rewrites = restore_integer_leaky_relu(destination)
+    concat_rewrites.extend(restore_integer_reductions(destination))
     concat_rewrites.extend(coalesce_slice_partitions(destination, structure_reference))
     concat_rewrites.extend(satisfy_quantization_constraints(
         destination, symmetric=config.activation_scheme == 'symmetric'))
@@ -104,22 +105,27 @@ def static_w4a8_export(source, destination, specs, samples, mapping, config, *, 
         tensor.quantization.quantizedDimension = axis
 
     weights, converted, bias_encodings = {}, [], {}
-    supported = {s.BuiltinOperator.CONV_2D: (0, 7),
-                 s.BuiltinOperator.DEPTHWISE_CONV_2D: (3, 7),
-                 s.BuiltinOperator.FULLY_CONNECTED: (0, 13)}
+    # axis, minimum opcode version, activation slot, bias slot. TransposeConv
+    # takes [output_shape, filter, input, bias], unlike the other kernels.
+    supported = {s.BuiltinOperator.CONV_2D: (0, 7, 0, 2),
+                 s.BuiltinOperator.DEPTHWISE_CONV_2D: (3, 7, 0, 2),
+                 s.BuiltinOperator.FULLY_CONNECTED: (0, 13, 0, 2),
+                 s.BuiltinOperator.TRANSPOSE_CONV: (0, 3, 2, 3)}
     minimum_scales = {}
     for op in graph.operators:
         code = model.operatorCodes[op.opcodeIndex]
-        if max(code.builtinCode, code.deprecatedBuiltinCode) not in supported:
+        builtin = max(code.builtinCode, code.deprecatedBuiltinCode)
+        if builtin not in supported:
             continue
-        if len(op.inputs) < 3 or op.inputs[2] < 0:
+        _, _, input_slot, bias_slot = supported[builtin]
+        if len(op.inputs) <= bias_slot or op.inputs[bias_slot] < 0:
             continue
-        activation = graph.tensors[int(op.inputs[0])]
+        activation = graph.tensors[int(op.inputs[input_slot])]
         qp = activation.quantization
         if (qp is None or qp.scale is None or len(qp.scale) != 1
                 or not np.isfinite(qp.scale[0]) or qp.scale[0] <= 0):
             raise ValueError('Static W4A8 requires positive scalar activation scales')
-        bias_values = float_constant(graph.tensors[int(op.inputs[2])]).astype(np.float64)
+        bias_values = float_constant(graph.tensors[int(op.inputs[bias_slot])]).astype(np.float64)
         # Reserve half the int32 range for the dot product. Calibrating a
         # nearly constant edge can otherwise make even an ordinary bias
         # overflow. Enlarge weight scale rather than wrap/clamp bias codes.
@@ -132,14 +138,14 @@ def static_w4a8_export(source, destination, specs, samples, mapping, config, *, 
         code = model.operatorCodes[op.opcodeIndex]
         builtin = max(code.builtinCode, code.deprecatedBuiltinCode)
         if builtin not in supported:
-            if builtin in (s.BuiltinOperator.BATCH_MATMUL, s.BuiltinOperator.TRANSPOSE_CONV):
-                raise ValueError('Static W4A8 supports Conv2D, DepthwiseConv2D and FullyConnected weights; unsupported matrix/deconvolution operation')
+            if builtin == s.BuiltinOperator.BATCH_MATMUL:
+                raise ValueError('Static W4A8 does not support BatchMatMul weights')
             continue
-        input_tensor = graph.tensors[int(op.inputs[0])]
+        axis, version, input_slot, bias_slot = supported[builtin]
+        input_tensor = graph.tensors[int(op.inputs[input_slot])]
         output_tensor = graph.tensors[int(op.outputs[0])]
         if input_tensor.type != s.TensorType.INT8 or output_tensor.type != s.TensorType.INT8:
             raise ValueError('Static W4A8 requires INT8 input/output on every weighted operation')
-        axis, version = supported[builtin]
         index = int(op.inputs[1])
         tensor = graph.tensors[index]
         if tensor.sparsity is not None or tensor.isVariable:
@@ -171,8 +177,8 @@ def static_w4a8_export(source, destination, specs, samples, mapping, config, *, 
         qp = input_tensor.quantization
         if qp is None or qp.scale is None or len(qp.scale) != 1:
             raise ValueError('Static W4A8 requires scalar input activation scale')
-        if len(op.inputs) > 2 and op.inputs[2] >= 0:
-            bias_index = int(op.inputs[2])
+        if len(op.inputs) > bias_slot and op.inputs[bias_slot] >= 0:
+            bias_index = int(op.inputs[bias_slot])
             bias = graph.tensors[bias_index]
             bias_scales = (np.float64(qp.scale[0]) * scales.astype(np.float64)).astype(np.float32)
             if not np.isfinite(bias_scales).all() or np.any(bias_scales <= 0):
@@ -207,7 +213,13 @@ def static_w4a8_export(source, destination, specs, samples, mapping, config, *, 
     if model.metadataBuffer is not None:
         model.metadataBuffer = np.array([remap[int(i)] for i in model.metadataBuffer], dtype=np.int32)
     write_model(model, destination)
+    runtime_requirements = []
+    if any(max(model.operatorCodes[op.opcodeIndex].builtinCode,
+               model.operatorCodes[op.opcodeIndex].deprecatedBuiltinCode)
+           == s.BuiltinOperator.TRANSPOSE_CONV for op in graph.operators):
+        runtime_requirements.append('TRANSPOSE_CONV with packed INT4 weights requires an INT4-capable kernel; the tested LiteRT CPU kernel only accepts INT8 weights')
     return {'backend': 'static-affine-w4a8', 'activation_calibration': details,
+            'runtime_requirements': runtime_requirements,
             'constraint_rewrites': concat_rewrites,
             'weight_source': 'original_fp32_tflite_constants',
             'weight_range': [-7, 7], 'packing': 'low_nibble_first_twos_complement',

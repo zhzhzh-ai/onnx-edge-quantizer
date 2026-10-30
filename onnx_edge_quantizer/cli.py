@@ -64,6 +64,10 @@ def parser():
     p.add_argument("--allow-float-ops", action="store_true", help="Permit native backend to leave unsupported operations in float; report lists these operations")
     p.add_argument("--structure-reference", type=Path,
                    help="Require the exported graph's operators, edges, shapes and control constants to match this TFLite before publishing")
+    p.add_argument("--validation-mode", choices=["full", "structure"], default="full",
+                   help="structure: require a structure reference and integer precision checks, but skip output parity and quantized runtime validation")
+    p.add_argument('--reference-padding-policy', choices=['preserve', 'baseline'], default='preserve',
+                   help='baseline: explicitly adopt reference pooling padding semantics; requires structure validation')
     p.add_argument("--overwrite", action="store_true")
     p.add_argument("--keep-workdir", type=Path, help="Keep conversion logs and intermediate files in a NEW directory")
     p.add_argument("--doctor", action="store_true", help="Print dependency/platform diagnostics and exit")
@@ -83,7 +87,7 @@ def doctor():
 def _execute(args, workdir):
     from .data import input_specs, load_samples
     from .converter import convert_onnx, converted_output_layouts, expose_channel_last_inputs
-    from .runtime import calibrate, inventory, check_native_precision
+    from .runtime import calibrate, inventory, check_native_precision, restore_output_names
     from .backends import native_export, reference_export
     from .tflite_optimizations import (
         normalize_maxpool_padding, normalize_deployment_graph,
@@ -96,9 +100,12 @@ def _execute(args, workdir):
         collapse_transpose_chains, normalize_unit_strided_slices, lower_reference_splits,
     )
     from .reference_interfaces import align_terminal_output_layout
-    from .onnx_compat import lower_custom_gemm, restore_inferred_reshapes
-    from .channel_shuffle import align_channel_shuffles
-    from .padding_helpers import simplify_padding_helpers
+    from .onnx_compat import lower_custom_gemm, restore_inferred_reshapes, restore_concat_axes
+    from .channel_shuffle import align_channel_shuffles, align_channel_shuffle_partitions
+    from .padding_helpers import simplify_padding_helpers, deduplicate_float_padding, deduplicate_static_slices
+    from .transpose_conv import fuse_transpose_conv_bias
+    from .reference_ops import align_scalar_transposes, align_reduction_indices, align_flattened_concat, align_pad_transposes
+    from .reference_padding import adopt_reference_pool_padding
     from .validation import validate
     model, specs = input_specs(args.model, pairs(args.input_shape, shape=True))
     samples = load_samples(args.calibration, specs, args.synthetic_samples, args.seed, args.random_min, args.random_max)
@@ -107,19 +114,28 @@ def _execute(args, workdir):
     config = Config(args.weight_dtype, args.activation_dtype, args.weight_scheme, args.activation_scheme, args.weight_granularity)
     LOG.info("Converting ONNX to FP32 TFLite")
     float_path = args.float_tflite.resolve() if args.float_tflite else convert_onnx(model, specs, workdir)
+    if args.float_tflite and args.reference_padding_policy == 'baseline':
+        source_bytes = float_path.read_bytes()
+        float_path = workdir / 'reference_float.tflite'
+        float_path.write_bytes(source_bytes)
     output_layouts = converted_output_layouts(model, float_path) if not args.float_tflite else {}
     static_rewrites = lower_custom_gemm(float_path, model) if not args.float_tflite else []
     if not args.float_tflite:
+        static_rewrites.extend(restore_concat_axes(float_path, model))
+        static_rewrites.extend(fuse_transpose_conv_bias(float_path))
         static_rewrites.extend(restore_inferred_reshapes(float_path, model))
         static_rewrites.extend(fold_static_tensors(float_path))
     padding_rewrites = normalize_maxpool_padding(float_path) if not args.float_tflite else []
-    structure_rewrites = normalize_deployment_graph(float_path) if not args.float_tflite else []
+    structure_rewrites = normalize_deployment_graph(float_path, args.structure_reference) if not args.float_tflite else []
     if not args.float_tflite:
         structure_rewrites.extend(fuse_scalar_gather_reshapes(float_path))
         structure_rewrites.extend(restore_pointwise_rank(float_path))
         structure_rewrites.extend(simplify_padding_helpers(float_path, args.structure_reference))
         structure_rewrites.extend(align_channel_shuffles(float_path, args.structure_reference))
         structure_rewrites.extend(commute_unary_before_reshape(float_path, args.structure_reference))
+        structure_rewrites.extend(align_scalar_transposes(float_path, args.structure_reference))
+        structure_rewrites.extend(align_reduction_indices(float_path, args.structure_reference))
+    reference_padding_changes = []
     input_layouts = (expose_channel_last_inputs(float_path, specs,
                                               deployment_axis_order=bool(args.structure_reference))
                      if not args.float_tflite and not args.keep_onnx_input_layout else {})
@@ -129,7 +145,7 @@ def _execute(args, workdir):
         layout_rewrites = normalize_channel_layouts(float_path, args.structure_reference)
         structure_rewrites.extend(lower_reference_splits(float_path, args.structure_reference))
         static_rewrites.extend(fold_static_tensors(float_path))
-        structure_rewrites.extend(normalize_deployment_graph(float_path))
+        structure_rewrites.extend(normalize_deployment_graph(float_path, args.structure_reference))
         if args.structure_reference:
             structure_rewrites.extend(lower_nearest_resize_to_gathers(float_path))
         if args.structure_reference:
@@ -139,6 +155,18 @@ def _execute(args, workdir):
         structure_rewrites.extend(normalize_unit_strided_slices(float_path))
         structure_rewrites.extend(normalize_elementwise_constants(float_path))
         structure_rewrites.extend(commute_unary_before_reshape(float_path, args.structure_reference))
+        structure_rewrites.extend(align_scalar_transposes(float_path, args.structure_reference))
+        structure_rewrites.extend(align_reduction_indices(float_path, args.structure_reference))
+    if args.reference_padding_policy == 'baseline':
+        reference_padding_changes = adopt_reference_pool_padding(float_path, args.structure_reference)
+        LOG.warning('Applied reference pooling padding policy (%d change(s)); ONNX-equivalent output semantics are not claimed',
+                    len(reference_padding_changes))
+    if not args.float_tflite:
+        structure_rewrites.extend(align_channel_shuffle_partitions(float_path, args.structure_reference))
+        structure_rewrites.extend(align_flattened_concat(float_path, args.structure_reference))
+        structure_rewrites.extend(align_pad_transposes(float_path, args.structure_reference))
+        structure_rewrites.extend(deduplicate_float_padding(float_path))
+        structure_rewrites.extend(deduplicate_static_slices(float_path))
     for name, layout in input_layouts.items():
         LOG.info("TFLite input %s: %s -> %s; layout adapter %s", name,
                  layout["onnx_shape"], layout["tflite_shape"],
@@ -159,6 +187,7 @@ def _execute(args, workdir):
         if args.structure_reference and args.weight_dtype == 'int4' and args.activation_dtype == 'int8':
             from .reference_quantization import align_quantize_boundaries
             details['reference_boundaries'] = align_quantize_boundaries(candidate, args.structure_reference)
+        details['output_names'] = restore_output_names(candidate, float_path)
     else:
         LOG.warning("Reference export uses FP32 storage/computation with explicit rounding and clipping; it provides no integer compression or integer acceleration")
         details = reference_export(float_path, candidate, ranges, config)
@@ -181,15 +210,25 @@ def _execute(args, workdir):
             raise ValueError(f"Native export left float compute operations: {model_inventory['float_compute_ops']}. Use --allow-float-ops to explicitly accept a mixed model")
         details["precision_verification"] = check_native_precision(candidate, args.weight_dtype, args.activation_dtype, args.weight_granularity)
     validation_samples = load_samples(args.validation_data, specs) if args.validation_data else samples
-    LOG.info("Checking ONNX/FP32 TFLite parity and running quantized model on %d sample(s)", len(validation_samples))
-    comparisons = validate(args.model, float_path, candidate, specs, validation_samples, pairs(args.input_map),
-                           pairs(args.output_map), args.float_atol, args.float_rtol,
-                           output_layouts=output_layouts, input_layouts=input_layouts)
+    if args.validation_mode == 'full':
+        LOG.info("Checking ONNX/FP32 TFLite parity and running quantized model on %d sample(s)", len(validation_samples))
+        comparisons = validate(args.model, float_path, candidate, specs, validation_samples, pairs(args.input_map),
+                               pairs(args.output_map), args.float_atol, args.float_rtol,
+                               output_layouts=output_layouts, input_layouts=input_layouts)
+    else:
+        comparisons = []
+        LOG.warning('Structure and integer precision checked; ONNX output parity and quantized runtime execution were not requested')
     report = {"tool_version": __version__, "mode": args.mode, "algorithm": "min-max", "granularity": config.weight_granularity,
               "weight_granularity": config.weight_granularity, "activation_granularity": "per-tensor",
               "requested": config.__dict__, "inputs": specs, "synthetic_calibration": args.calibration is None,
-              "calibration_samples": len(samples), "validation_samples": len(validation_samples),
-              "onnx_reference_graph_optimization": "disabled",
+              "calibration_samples": len(samples),
+              "validation_samples": len(validation_samples) if args.validation_mode == 'full' else 0,
+              "validation_mode": args.validation_mode,
+              "reference_padding_policy": args.reference_padding_policy,
+              "reference_semantics_changes": reference_padding_changes,
+              "runtime_validation": "passed" if args.validation_mode == 'full' else "not_requested",
+              "onnx_parity_validation": "passed" if args.validation_mode == 'full' else "not_requested",
+              "onnx_reference_graph_optimization": "disabled" if args.validation_mode == 'full' else "not_run",
               "seed": args.seed if args.calibration is None else None,
               "activation_ranges": {str(i): {"min": lo, "max": hi} for i, (lo, hi) in ranges.items()},
               "backend_details": details, "output_inventory": model_inventory,
@@ -204,11 +243,15 @@ def _execute(args, workdir):
               "input_onnx": str(args.model.resolve()), "output_tflite": str(args.output.resolve()),
               "output_bytes": candidate.stat().st_size,
               "warnings": (["Synthetic data does not establish real task accuracy"] if args.calibration is None else [])
+                           + (["Structure-only validation: quantized runtime compatibility and ONNX output parity were not checked"] if args.validation_mode == 'structure' else [])
+                           + details.get('runtime_requirements', [])
+                           + (["Reference pooling boundary semantics were adopted; ONNX numerical equivalence is not claimed"]
+                              if any(change['semantics_changed'] for change in reference_padding_changes) else [])
                            + (["Reference simulation: FP32 arithmetic/storage, no integer speed or size benefits"] if args.mode == "reference" else [])}
     report_path = args.output.with_suffix(".quantization.json")
     staged_report = workdir / "report.json"
     staged_report.write_text(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
-    # Only publish after all inference and validation checks pass.
+    # Only publish after all checks required by the explicit validation mode.
     args.output.parent.mkdir(parents=True, exist_ok=True)
     for source, destination in [(candidate, args.output), (staged_report, report_path)]:
         with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False, suffix=".tmp") as stream:
@@ -231,6 +274,10 @@ def main(argv=None):
     try:
         if args.model is None or args.output is None:
             raise ValueError("MODEL and --output are required")
+        if args.validation_mode == 'structure' and (args.mode != 'native' or not args.structure_reference):
+            raise ValueError('--validation-mode structure requires native mode and --structure-reference')
+        if args.reference_padding_policy == 'baseline' and args.validation_mode != 'structure':
+            raise ValueError('--reference-padding-policy baseline requires --validation-mode structure')
         if not args.model.is_file() or args.model.suffix.lower() != ".onnx":
             raise ValueError("Input must be an existing .onnx model")
         if args.output.suffix.lower() != ".tflite":

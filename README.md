@@ -53,10 +53,14 @@ onnx-edge-quantizer model.onnx -o model_w8a16.tflite \
 | `--input-shape 'images=1,3,224,224'` | 为动态输入指定固定形状，多输入可重复传入 |
 | `--validation-data validation.npz` | 使用独立数据验证输出误差 |
 | `--structure-reference baseline_uint8.tflite` | 要求导出模型与已有 TFLite 的算子、连接、形状和控制常量一致 |
+| `--validation-mode structure` | 仅检查结构及整数精度，需指定结构基准；跳过输出数值和量化模型运行验证 |
+| `--reference-padding-policy baseline` | 显式采用基准的池化 padding 语义，需配合结构验证；可能改变 ONNX 边界数值 |
 | `--keep-onnx-input-layout` | 保留 ONNX 输入布局；默认可将输入接口调整为 NHWC |
 | `--overwrite` | 覆盖已有输出 |
 
-成功后生成 `.tflite` 和同名 `.quantization.json` 报告，包含量化配置及输出误差。导出前会检查 ONNX/FP32 TFLite 输出一致性，并实际运行量化模型。完整参数见 `onnx-edge-quantizer --help`。
+成功后生成 `.tflite` 和同名 `.quantization.json` 报告。默认会检查 ONNX/FP32 TFLite 输出一致性，并实际运行量化模型；结构验证模式单独记录跳过的检查。完整参数见 `onnx-edge-quantizer --help`。
+
+批量部署可通过 `bash run_w4a8.sh --batch --validated-summary ...` 复用已转换模型，仅补齐缺失项。当前 44 对的部署结果、输入 shape 特化与使用方式见 [44 对模型部署](docs/DEPLOYMENT_44.md)。
 
 ## 支持的精度类型
 
@@ -89,7 +93,8 @@ onnx-edge-quantizer model.onnx -o model_reference.tflite \
 | `CONV_2D` | 普通二维卷积 | `per-tensor` / `per-channel` |
 | `DEPTHWISE_CONV_2D` | 深度卷积 | `per-tensor` / `per-channel` |
 | `FULLY_CONNECTED` | 全连接 | `per-tensor` / `per-channel` |
+| `TRANSPOSE_CONV` | 反卷积（结构导出） | `per-tensor` / `per-channel` |
 
-权重必须是稠密常量，Bias 使用 INT32。`BATCH_MATMUL` 和 `TRANSPOSE_CONV`（反卷积）目前不支持 W4A8 导出。
+权重必须是稠密常量，Bias 使用 INT32。`BATCH_MATMUL` 目前不支持 W4A8 导出。反卷积可保留算子结构并导出真实打包 INT4 权重，但所测 LiteRT CPU 内核仍仅接受 INT8 反卷积权重；需使用结构验证模式，实际部署需要支持 INT4 的反卷积内核。
 
-ReLU、LeakyReLU、Sigmoid、Softmax、池化、Add/Mul、Concat、Reshape、Transpose、Slice 等无 INT4 权重的算子沿用 INT8 或形状/索引内核，具体参数组合仍受 AEQ/LiteRT 限制；含上述算子不代表整个模型一定可转换。详细模型验证记录见 [W4A8 调试记录](docs/W4A8_DEBUG_30.md)。
+ReLU、LeakyReLU、Sigmoid、Softmax、池化、Add/Mul、Concat、Reshape、Transpose、Slice 等无 INT4 权重的算子沿用 INT8 或形状/索引内核，具体参数组合仍受 AEQ/LiteRT 限制。模型结构与基准修正记录见 [剩余模型调试](docs/W4A8_REMAINING_DEBUG.md)。

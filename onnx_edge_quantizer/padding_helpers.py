@@ -108,3 +108,91 @@ def simplify_padding_helpers(path, reference=None):
         compact_model(model)
         write_model(model, path)
     return changes
+
+
+def deduplicate_float_padding(path):
+    """Share identical pure FP32 padding of the same source tensor."""
+    model = read_model(path)
+    _, s = modules()
+    if len(model.subgraphs) != 1:
+        return []
+    g = model.subgraphs[0]
+    dynamic = set(map(int, g.inputs)) | {int(i) for op in g.operators for i in op.outputs}
+    seen, aliases, removed = {}, {}, set()
+    for op in g.operators:
+        code = model.operatorCodes[op.opcodeIndex]
+        kind = max(code.builtinCode, code.deprecatedBuiltinCode)
+        if (kind not in (s.BuiltinOperator.PAD, s.BuiltinOperator.PADV2)
+                or int(op.outputs[0]) in g.outputs
+                or g.tensors[int(op.inputs[0])].type != s.TensorType.FLOAT32):
+            continue
+        controls = []
+        for i in op.inputs[1:]:
+            t = g.tensors[int(i)]
+            raw = model.buffers[t.buffer].data
+            if int(i) in dynamic or raw is None:
+                break
+            controls.append((int(t.type), tuple(t.shape), bytes(raw)))
+        if len(controls) != len(op.inputs) - 1:
+            continue
+        key = (kind, int(op.inputs[0]), tuple(controls), tuple(g.tensors[int(op.outputs[0])].shape))
+        if key in seen:
+            aliases[int(op.outputs[0])] = seen[key]
+            removed.add(id(op))
+        else:
+            seen[key] = int(op.outputs[0])
+    if not removed:
+        return []
+    for op in g.operators:
+        op.inputs = np.array([aliases.get(int(i), int(i)) for i in op.inputs], np.int32)
+    g.operators = [op for op in g.operators if id(op) not in removed]
+    compact_model(model)
+    write_model(model, path)
+    return [{'rewrite': 'deduplicate_float_padding', 'count': len(removed)}]
+
+
+def deduplicate_static_slices(path):
+    model = read_model(path)
+    _, s = modules()
+    if len(model.subgraphs) != 1:
+        return []
+    graph = model.subgraphs[0]
+    dynamic = set(map(int, graph.inputs)) | {int(i) for op in graph.operators for i in op.outputs}
+    seen, aliases, removed = {}, {}, set()
+    for op in graph.operators:
+        code = model.operatorCodes[op.opcodeIndex]
+        kind = max(code.builtinCode, code.deprecatedBuiltinCode)
+        if kind not in (s.BuiltinOperator.SLICE, s.BuiltinOperator.STRIDED_SLICE) or int(op.outputs[0]) in graph.outputs:
+            continue
+        controls = []
+        for i in op.inputs[1:]:
+            t = graph.tensors[int(i)]
+            data = model.buffers[t.buffer].data
+            if int(i) in dynamic or data is None:
+                break
+            controls.append((int(t.type), tuple(t.shape), bytes(data)))
+        if len(controls) != len(op.inputs) - 1:
+            continue
+        p = op.builtinOptions
+        options = tuple(int(getattr(p, name, 0)) for name in
+                        ('beginMask', 'endMask', 'ellipsisMask', 'newAxisMask', 'shrinkAxisMask', 'offset'))
+        source = int(op.inputs[0])
+        while source in aliases:
+            source = aliases[source]
+        key = (kind, source, tuple(controls), options, tuple(graph.tensors[int(op.outputs[0])].shape))
+        if key in seen:
+            aliases[int(op.outputs[0])] = seen[key]
+            removed.add(id(op))
+        else:
+            seen[key] = int(op.outputs[0])
+    if removed:
+        def resolve(i):
+            while i in aliases:
+                i = aliases[i]
+            return i
+        for op in graph.operators:
+            op.inputs = np.array([resolve(int(i)) for i in op.inputs], np.int32)
+        graph.operators = [op for op in graph.operators if id(op) not in removed]
+        compact_model(model)
+        write_model(model, path)
+    return [{'rewrite': 'deduplicate_static_slices', 'count': len(removed)}] if removed else []

@@ -201,6 +201,21 @@ def normalize_channel_layouts(path, reference=None):
                 value = permutation.index(int(axis.item()) % len(permutation))
                 op.inputs[axis_slot] = add_constant(np.array(value, '<i4').reshape(axis.shape),
                                                     g.tensors[inputs[axis_slot]].name + b'/layout')
+        elif code == 'STRIDED_SLICE':
+            p = op.builtinOptions
+            candidate = view(inputs[0])[1]
+            vectors = [constant(i) for i in inputs[1:]]
+            if (len(vectors) == 3 and all(v is not None and v.size == len(candidate) for v in vectors)
+                    and p.ellipsisMask == p.newAxisMask == p.shrinkAxisMask == 0
+                    and not getattr(p, 'offset', False)):
+                permutation = candidate
+                op.inputs[0] = materialize(inputs[0], permutation)
+                for slot, value in enumerate(vectors, 1):
+                    op.inputs[slot] = add_constant(value.reshape(-1)[list(permutation)],
+                                                    g.tensors[inputs[slot]].name + b'/strided_layout')
+                for field in ('beginMask', 'endMask'):
+                    mask = int(getattr(p, field))
+                    setattr(p, field, sum(((mask >> axis) & 1) << j for j, axis in enumerate(permutation)))
         elif code in ('SLICE', 'PAD', 'PADV2'):
             permutation = view(inputs[0])[1]
             vectors = [constant(i) for i in inputs[1:3 if code == 'SLICE' else 2]]
