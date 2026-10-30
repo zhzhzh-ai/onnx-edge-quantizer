@@ -1,23 +1,10 @@
 # ONNX Edge Quantizer
 
-项目地址：[zhzhzh-ai/onnx-edge-quantizer](https://github.com/zhzhzh-ai/onnx-edge-quantizer)。
+将 FP32 ONNX 模型转换为 Min-Max 校准的量化 TFLite，默认导出 W8A8，支持逐张量和逐通道权重量化。
 
-将 **FP32 ONNX** 模型转换成使用 **Min-Max 校准**的 TFLite 模型。默认使用 **INT8 对称权重 + INT8 非对称激活**，逐张量量化。提供命令行入口 `onnx-edge-quantizer` 和 `python -m onnx_edge_quantizer`。
+## 安装
 
-权重量化粒度通过 `--weight-granularity per-tensor|per-channel`（别名 `--granularity`）选择，默认 `per-tensor`，原生模式与参考模式都支持。**该参数仅控制权重，激活始终按 per-tensor 量化。**
-
-## 支持范围：原生整数与参考模拟
-
-**TFLite/Google AI Edge Quantizer 无法原生执行任意权重、激活精度组合。** 本工具不把更改文件后缀、浮点模型或 8 位存储冒充 4 位整数模型，也不会静默修改用户选择的精度。
-
-- `--mode native`（默认）：调用 Google AI Edge Quantizer，真正量化支持的算子。权重支持 `int4` / `int8`，要求对称；内部激活支持 `int8` / `int16`，其中 `int16` 要求显式选择对称量化。INT4 算子覆盖取决于所安装的 AEQ/LiteRT 版本；不支持的算子默认报错。上游官方支持 Linux/macOS；本项目在 Windows + Python 3.12 上也实测通过了当前 nightly 的 W8A8、W8A16、W4A8 导出推理，Windows 支持仍应视为实验性质。
-- `--mode reference`：权重和激活均接受 `int4 / uint4 / int8 / uint8 / int16`，支持对称和非对称。导出的 `.tflite` 使用浮点算子显式计算除法、舍入、截断、反量化；权重保存为量化后重建的 FP32 值。**这是精度参考模拟，不提供整数压缩、4 位打包或整数加速。** 报告和 TFLite description 均明确标记此行为。
-- `uint8` 模型输入/输出与 `uint8` 内部激活不是一回事。本工具的精度参数指计算图内部精度；原生模式不把 UINT8 I/O 包装视为 UINT8 内部量化。
-- 此工具不能保证转换任意 ONNX 算子。浮点 ONNX→TFLite 转换由 onnx2tf 负责；不支持的算子、控制流、多子图和不匹配的输入布局会明确失败。当前模型运行时输入必须全部是 FP32 张量。
-
-## 安装（Conda，推荐）
-
-先安装 Miniconda、Anaconda 或 Miniforge，然后在支持 `conda` 的终端中执行。以下示例使用 Bash（Linux/macOS）；Windows PowerShell 的写法见下文：
+使用 Conda 创建 Python 3.12 环境：
 
 ```bash
 git clone https://github.com/zhzhzh-ai/onnx-edge-quantizer.git
@@ -26,145 +13,29 @@ conda env create -f environment.yml
 conda activate onnx-edge-quantizer
 export PYTHONNOUSERSITE=1
 python scripts/install.py
-```
-
-`environment.yml` 创建名为 `onnx-edge-quantizer` 的 Python 3.12 环境，并安装 pip。随后安装脚本按经过验证的顺序安装 onnx2tf、Google AI Edge Quantizer 和 LiteRT；这些转换依赖仍通过当前 Conda 环境里的 pip 安装。
-
-**安装前设置 `PYTHONNOUSERSITE=1`，并在后续测试和量化时保持该设置。** 它会禁止 Python 加载用户级 `site-packages`（Linux 上通常为 `~/.local/lib/python3.12/site-packages`），避免 pip 借用环境外已有的 `ml_dtypes`、`sympy` 等依赖。仅激活 Conda 环境并不能保证这些依赖全部安装在环境内。
-
-本机已验证的 Linux 安装方式（已有同名 Conda 环境和源码目录）：
-
-```bash
-conda activate onnx-edge-quantizer
-export PYTHONNOUSERSITE=1
-
-cd /data/Teammember/huan.zhang/modelconvert/onnx-edge-quantizer
-python scripts/install.py
-```
-
-其他机器请将 `cd` 路径替换为自己的项目目录。已有环境也应在设置 `PYTHONNOUSERSITE=1` 后执行安装脚本，让环境外的依赖被安装到当前 Conda 环境中。每次打开新终端，都需要重新激活环境并设置该变量。
-
-也可以不使用环境文件，手动创建相同环境：
-
-```bash
-conda create -n onnx-edge-quantizer -c conda-forge --override-channels python=3.12 pip -y
-conda activate onnx-edge-quantizer
-export PYTHONNOUSERSITE=1
-python scripts/install.py
-```
-
-检查环境并生成 W4A8 模型：
-
-```bash
-python -m pip check
 python -m onnx_edge_quantizer --doctor
-onnx-edge-quantizer model.onnx -o model_w4a8.tflite --weight-dtype int4 --activation-dtype int8 --calibration calibration.npz
 ```
 
-Windows PowerShell 使用 `$env:PYTHONNOUSERSITE = "1"` 设置相同的隔离选项：
+Windows PowerShell 将 `export PYTHONNOUSERSITE=1` 换为 `$env:PYTHONNOUSERSITE = "1"`。后续使用时，也需激活环境并设置该变量。安装脚本会按顺序安装 onnx2tf、AI Edge Quantizer 和 LiteRT。
 
-```powershell
-conda activate onnx-edge-quantizer
-$env:PYTHONNOUSERSITE = "1"
-# 在项目目录中安装；首次使用前仍需创建环境并下载源码。
-python scripts/install.py
-.\quantize.ps1 model.onnx -o model_w4a8.tflite --weight-dtype int4 --activation-dtype int8 --calibration calibration.npz
-```
+## ONNX 转 TFLite
 
-Windows 启动脚本优先使用当前激活的 Conda 环境；没有激活 Conda 时，仍兼容激活的 venv 和项目原有的 `.venv312` / `.venv`。安装脚本会检查实际运行的 Python 是否属于所激活的 Conda 环境，且不往 Conda `base` 环境安装。以后重新打开终端，先执行 `conda activate onnx-edge-quantizer`，再按终端类型设置 `PYTHONNOUSERSITE=1`。
-
-`onnx2tf>=2.6.9` 的直接 FlatBuffer 转换后端要求 Python 3.12+，不需要 TensorFlow。onnx2tf 依赖 stable LiteRT，而 AEQ 依赖 nightly LiteRT，两者使用相同 Python 模块名；`scripts/install.py` 保证最后安装本项目验证的 nightly 运行时。请不要把所有依赖无序地并入 `environment.yml` 的 pip 部分。
-
-如需手动安装后端，请在激活 Conda 环境并设置 `PYTHONNOUSERSITE=1` 后执行：
+**W8A8（默认）**：
 
 ```bash
-python -m pip install -e '.[convert,test]' onnx2tf==2.6.9
-python -m pip install ai-edge-quantizer-nightly==0.10.0.dev20261016
-python -m pip install --force-reinstall --no-deps ai-edge-litert-nightly==2.4.0.dev20261014
+onnx-edge-quantizer model.onnx -o model_w8a8.tflite \
+  --calibration calibration.npz
 ```
 
-`requirements-windows-tested.txt` 记录最初在 Windows venv 中验证的依赖版本；Conda 环境需按上述顺序安装后端。GitHub Actions 现在使用同一份 `environment.yml` 创建 Conda 环境后运行测试。若已有等价的浮点 TFLite，可用 `--float-tflite float.tflite` 跳过 onnx2tf；核心模块支持 Python 3.11+，仍会校验与原始 ONNX 的输出一致性。
-
-
-## 常用命令
-
-Linux 本地环境可使用项目根目录的 `run_w4a8.sh`，默认转换 Alexnet 为 W4A8（per-channel 权重）并检查与 Alexnet UINT8 基准的结构一致性：
-
-```bash
-bash run_w4a8.sh --overwrite
-bash run_w4a8.sh /path/to/model.onnx -o output/model_w4a8.tflite \
-  --calibration /path/to/calibration.npy \
-  --structure-reference /path/to/model_uint8.tflite
-```
-
-脚本使用现有 `onnx-edge-quantizer` Python 环境，可通过 `W4A8_PYTHON` 覆盖解释器路径。默认不覆盖已有输出；`--overwrite` 显式允许覆盖，`--dry-run` 只打印命令，`--help` 查看帮助。其他模型需自行指定结构参考；未提供校准数据时使用合成输入验证流程。
-
-默认：不提供校准数据时，按模型输入形状生成 **1 组** `[-1, 1)` 均匀分布 FP32 输入，种子为 0，实际运行模型、收集中间层范围：
-
-```bash
-onnx-edge-quantizer model.onnx -o model_int8.tflite
-```
-
-使用外部校准数据和独立验证数据：
-
-```bash
-onnx-edge-quantizer model.onnx -o model_int8.tflite \
-  --calibration calibration.npz --validation-data validation.npz
-```
-
-按输出通道量化权重，每个通道独立计算 Min-Max、scale 和 zero-point：
-
-```powershell
-.\quantize.ps1 model.onnx -o model_per_channel.tflite --weight-granularity per-channel --calibration calibration.npz
-```
-
-逐张量量化可显式使用 `--weight-granularity per-tensor`。两种粒度均可搭配 `--weight-dtype` 和 `--mode reference`。通道轴按转换后的 TFLite 权重布局确定：Conv2D、FullyConnected、TransposeConv 为第 0 维，DepthwiseConv2D 为第 3 维；BatchMatMul 按左右矩阵和转置标志选择输出通道轴。共享权重若被以不兼容的通道轴使用，会明确报错。原生后端若没有按所选粒度导出，也会拒绝发布模型。
-
-原生 INT4 权重 + INT8 激活（需要对应算子的内核支持）：
+**W4A8**：
 
 ```bash
 onnx-edge-quantizer model.onnx -o model_w4a8.tflite \
-  --weight-dtype int4 --activation-dtype int8 --calibration calibration.npz
+  --weight-dtype int4 --activation-dtype int8 \
+  --weight-granularity per-channel --calibration calibration.npz
 ```
 
-W4A8 使用本项目的静态 affine 导出路径：先由 AEQ 建立 A8 整数图并校准激活，再从原始 FP32 权重重新计算 INT4 scale/code，按低半字节在前打包，同时重新计算 INT32 bias。支持 Conv2D、DepthwiseConv2D 和 FullyConnected，支持逐张量和逐通道权重；不会截断 W8 码值或复用 W8 权重 scale，也不会自动引入动态分块 FC。若近零激活范围使 bias 超出 INT32，则增大对应权重 scale，保留整数 bias 的可表达性。其他含权重的算子明确拒绝，最终仍需通过 LiteRT 实际推理。
-
-### 与已有 UINT8 TFLite 对齐结构
-
-转换前规范化通道预处理、可证明等价的池化/卷积 padding、Conv 后通道仿射、融合激活及多余 reshape。默认不修改 `--float-tflite` 提供的模型。
-
-通过 `--structure-reference baseline_uint8.tflite` 启用发布前结构检查。例如：
-
-```bash
-python -m onnx_edge_quantizer GoogleNet.onnx -o googlenet_w4a8.tflite \
-  --weight-dtype int4 --weight-granularity per-channel \
-  --structure-reference GoogleNet_uint8.tflite
-```
-
-检查覆盖算子、数据连接、各输入输出形状、广播常量形状、perm/axis/padding 等控制常量及融合激活；权重值、scale/zero point、INT8/UINT8 signedness、名称和 opcode 版本不要求相同。SAME/VALID 仅在实际 padding 完全相同时视为等价。结构检查不替代 ONNX/FP32 数值校验或最终量化推理。
-
-使用结构基准时，四维输入遵循 `[0,2,3,1]` 部署轴顺序；已有输入转置可吸收，否则插入逆转置保证计算不变。校准和验证数据仍按 ONNX 原始布局提供；`--keep-onnx-input-layout` 可禁止该接口调整。
-
-结构不一致会报错，保留已有输出；用 `--keep-workdir NEW_DIR` 查看 `candidate.tflite` 和 `structure_comparison.json`。成功报告包含 `structure_comparison.matched=true`。独立检查：
-
-```bash
-python -m onnx_edge_quantizer.structure candidate.tflite baseline.tflite --report structure.json
-```
-
-批量匹配同名 ONNX 与 `*_uint8.tflite`，逐个转换并执行结构、精度和推理检查：
-
-```bash
-python scripts/validate_model_zoo.py \
-  --onnx-root /path/to/model_zoo/onnx \
-  --reference-root /path/to/tflite_uint8 \
-  --output-dir output/zoo_validation --workers 2
-```
-
-可用 `--models GoogleNet Alexnet` 筛选，`--dry-run` 查看配对。单输入动态尺寸按结构基准和明确的部署轴顺序补全；多输入动态尺寸拒绝猜测。`validation_summary.json` 记录全部成功和失败项，不把不兼容的旧基准、浮点转换错误或超时计为通过。
-
-可用 `--failed-from PREVIOUS_SUMMARY.json` 仅重试之前失败的配对。2026-10-30 完整回归为 **31/44 对通过**，原先失败的 30 对中修复 17 对；实现、产物和剩余阻塞见 [调试记录](docs/W4A8_DEBUG_30.md)。
-
-原生 INT8 权重 + INT16 激活，显式使用对称激活：
+**W8A16**：
 
 ```bash
 onnx-edge-quantizer model.onnx -o model_w8a16.tflite \
@@ -172,7 +43,36 @@ onnx-edge-quantizer model.onnx -o model_w8a16.tflite \
   --calibration calibration.npz
 ```
 
-UINT4 权重 + INT4 非对称激活的**参考模拟**：
+`calibration.npz` 按 ONNX 输入名保存经过预处理的 FP32 数据，沿用 ONNX 输入布局。例如输入 `images` 为 `[1,3,224,224]`，32 组校准数据的形状为 `[32,1,3,224,224]`；单输入也支持 `.npy`。不提供校准数据时，默认生成一组随机输入，仅用于验证转换流程。
+
+常用选项：
+
+| 选项 | 用途 |
+| --- | --- |
+| `--weight-granularity per-tensor\|per-channel` | 权重量化粒度，默认 `per-tensor`；激活始终为 `per-tensor` |
+| `--input-shape 'images=1,3,224,224'` | 为动态输入指定固定形状，多输入可重复传入 |
+| `--validation-data validation.npz` | 使用独立数据验证输出误差 |
+| `--structure-reference baseline_uint8.tflite` | 要求导出模型与已有 TFLite 的算子、连接、形状和控制常量一致 |
+| `--keep-onnx-input-layout` | 保留 ONNX 输入布局；默认可将输入接口调整为 NHWC |
+| `--overwrite` | 覆盖已有输出 |
+
+成功后生成 `.tflite` 和同名 `.quantization.json` 报告，包含量化配置及输出误差。导出前会检查 ONNX/FP32 TFLite 输出一致性，并实际运行量化模型。完整参数见 `onnx-edge-quantizer --help`。
+
+## 支持的精度类型
+
+W 表示权重位宽，A 表示内部激活位宽；模型输入/输出类型另行区分。
+
+| 模式 | 精度 | 说明 |
+| --- | --- | --- |
+| `native`（默认） | W8A8：INT8 权重 + INT8 激活 | 已验证，默认配置 |
+| `native` | W4A8：INT4 权重 + INT8 激活 | 已验证，使用静态 INT4 打包权重，算子范围见下文 |
+| `native` | W8A16：INT8 权重 + INT16 激活 | 已验证，需 `--activation-scheme symmetric` |
+| `native` | W4A16：INT4 权重 + INT16 激活 | 接受配置，依赖 AEQ/LiteRT 算子覆盖，尚未列入已验证组合 |
+| `reference` | 权重、激活均可选 `int4 / uint4 / int8 / uint8 / int16` | 浮点参考模拟，支持对称/非对称量化，不提供整数压缩或加速 |
+
+原生模式要求权重对称量化；INT8 激活默认非对称，INT16 激活要求对称。具体模型能否转换还取决于后端算子覆盖，默认遇到残留浮点计算会报错。
+
+参考模拟示例：
 
 ```bash
 onnx-edge-quantizer model.onnx -o model_reference.tflite \
@@ -180,126 +80,16 @@ onnx-edge-quantizer model.onnx -o model_reference.tflite \
   --calibration calibration.npz
 ```
 
-动态输入尺寸必须显式指定；校准和验证数据仍沿用 ONNX 的输入布局（例如 NCHW）。工具只根据已记录的输入接口转换向 TFLite 传入对应布局，不按形状猜测轴顺序：
+## W4A8 支持的算子
 
-```bash
-onnx-edge-quantizer model.onnx -o model_int8.tflite \
-  --input-shape 'images=1,3,224,224' --calibration calibration.npz
-```
+目前支持以下 TFLite 算子的 **INT4 权重 + INT8 激活** 导出：
 
-多输入模型可以重复指定 `--input-shape`。转换后的输入/输出若更名，可显式提供 `--input-map 'images=converted_images'`、`--output-map 'scores=converted_scores'`。不根据同形状或顺序猜测多输入/输出映射。
+| TFLite 算子 | 用途 | 权重量化粒度 |
+| --- | --- | --- |
+| `CONV_2D` | 普通二维卷积 | `per-tensor` / `per-channel` |
+| `DEPTHWISE_CONV_2D` | 深度卷积 | `per-tensor` / `per-channel` |
+| `FULLY_CONNECTED` | 全连接 | `per-tensor` / `per-channel` |
 
-如果 onnx2tf 将输出从 NCHW 改为 NHWC，输出校验会读取转换器生成的 tensor correspondence report，按其中明确记录的布局转换对齐 FP32 和量化输出后再计算误差。导出的 TFLite 保持转换后的实际布局；报告中的 `output_layouts` 记录比较使用的轴置换，`validation[].output_shapes` 记录两边实际 shape。不会通过尝试不同转置或 reshape 来放宽数值一致性检查。使用 `--float-tflite` 时不自动套用转换器布局记录。
+权重必须是稠密常量，Bias 使用 INT32。`BATCH_MATMUL` 和 `TRANSPOSE_CONV`（反卷积）目前不支持 W4A8 导出。
 
-其他选项：
-
-- `--synthetic-samples 32 --seed 42 --random-min 0 --random-max 1`：配置合成校准输入。
-- `--weight-scheme symmetric|asymmetric`、`--activation-scheme symmetric|asymmetric`：选择方案，受原生模式约束。
-- `--weight-granularity per-tensor|per-channel`：选择权重量化粒度，默认 per-tensor；`--granularity` 是同一参数的别名。激活保持 per-tensor。
-- `--allow-float-ops`：显式允许原生导出中不支持的算子保留浮点；报告列出残留浮点算子。默认禁止。
-- `--keep-workdir artifacts/debug-run`：保留临时 ONNX、转换日志和中间模型；该目录必须尚不存在。
-- `--overwrite`：允许覆盖输出模型及其报告。
-- `--float-atol`、`--float-rtol`：配置 ONNX 与浮点 TFLite 输出一致性检查的容差；默认分别为 `1e-4`、`1e-3`。
-
-**合成的单组随机输入可验证流程，不代表真实任务分布。** 实际部署应使用经过正确预处理、有代表性的输入校准，并使用独立验证集检查精度；分类准确率、检测 mAP 等任务指标需要在应用侧评估。
-
-## TFLite 输入布局
-
-默认将可安全吸收的输入布局转换合并到 TFLite 输入接口：例如 ONNX `[1,C,H,W]` 输入先经过 `[0,2,3,1]` 转置时，TFLite 直接接收 `[1,H,W,C]`，移除该边界转置；单通道时等价的 reshape 也会移除。GoogleNet 一类明确的 Gather(axis=1) 通道分支也可暴露 NHWC 接口，并插入逆转置使原分支计算保持不变。普通 reshape 不作为布局证据；指定结构基准时采用上文明确的部署轴顺序。
-
-用户提供的校准、验证数据仍按原 ONNX 名称和布局保存；工具对 TFLite 的范围采集、AEQ 校准和输出验证使用同一份输入轴置换，ONNX 推理继续使用原始数据。报告中的 `inputs` 是 ONNX 输入，`tflite_inputs` 是导出接口的实际 shape，`input_layouts` 记录每个输入的转换和移除的算子。部署时应按导出模型的实际输入布局喂入数据。
-
-如需保留原来的 ONNX 输入接口，增加 `--keep-onnx-input-layout`。使用 `--float-tflite` 时不修改用户提供的浮点模型。
-
-## 校准数据格式
-
-**校准输入不要求归一化到 0～1，工具也不会自动归一化。** 应输入模型正常推理时真正接收到的数据：如果预处理位于模型外，先完成相同的归一化、均值方差变换、通道顺序与 resize；如果预处理已包含在 ONNX 内，则提供该模型接口要求的原始浮点输入。不同输入可以有完全不同的数值范围；例如一个输入为 `[-1,1]`，另一个输入为 `[0,255]`，均可使用。当前接口要求浮点张量，原始 uint8 图像需按模型接口转换为 FP32，而非未经确认就除以 255。
-
-单输入 `.npy` 或按 ONNX 输入名保存的 `.npz`。支持：
-
-- 一组输入，形状完全等于模型输入形状；
-- 多组输入，额外增加最前面的 `samples` 维；
-- 一个目录，包含多个 `.npz` 文件，按文件名字典序读取；
-- 多输入 `.npz`，键必须与 ONNX 的运行时输入名称一致，每个输入的样本数相同。
-
-例如，模型输入 `images` 形状为 `[1,3,224,224]`：
-
-```python
-import numpy as np
-
-# 单组：保留模型的 batch 维。
-np.save('one.npy', np.random.rand(1, 3, 224, 224).astype(np.float32))
-
-# 32 组：增加 samples 维，不能把它与模型的 batch 维混淆。
-np.savez('calibration.npz',
-         images=np.random.rand(32, 1, 3, 224, 224).astype(np.float32))
-
-# 多输入，例如模型输入 left/right 均为 [1,4]。
-np.savez('multi.npz',
-         left=np.random.rand(32, 1, 4).astype(np.float32),
-         right=np.random.rand(32, 1, 4).astype(np.float32))
-```
-
-不接受整数校准数据、NaN/Inf、错位布局或不匹配的尺寸；不加载 pickle。
-
-可直接运行两个输入、不同数值范围的完整示例：
-
-```powershell
-python examples/make_multi_input_demo.py
-.\quantize.ps1 artifacts/multi-input/multi_input.onnx -o artifacts/multi-input/quantized.tflite --calibration artifacts/multi-input/calibration.npz --validation-data artifacts/multi-input/validation.npz
-```
-
-该示例的 `left` 输入范围为 `[-5,5]`，`right` 为 `[10,100]`；这只是展示数据格式，不是推荐所有模型使用这些范围。
-
-## 输出和验证
-
-成功输出：
-
-- 用户指定的 `.tflite`；
-- 同名 `.quantization.json`：权重/激活粒度配置、激活校准 Min/Max、原生 recipe 或参考量化参数、输出张量实际类型/scale/zero-point/quantized_dimension、残留浮点算子、逐样本输出 MSE/最大绝对误差/余弦相似度。参考模式逐通道权重记录 axis、各通道范围、scale 和 zero-point。
-
-输出前会实际运行 ONNX、FP32 TFLite、量化 TFLite。FP32 转换不一致、量化模型不可运行或严格原生模式仍含浮点计算时，命令失败，不发布候选模型。量化误差会记录在报告里，不内置一个适用于所有任务的精度阈值。所有校准样本默认也用于验证，可用 `--validation-data` 提供独立数据。
-
-Min-Max 统计针对**转换后的浮点 TFLite 计算图**，并非保证与 ONNX 节点一一对应（转换器可能融合算子）。Bias、shape 和 index 常量不作为普通权重量化；原生 bias 类型由 AEQ 按算子规则推导。参考模式量化 Conv2D、DepthwiseConv2D、FullyConnected、BatchMatMul 和 TransposeConv 的浮点常量权重，所有可观测浮点运行时激活边使用固定校准范围；其他浮点常量保持原值。所有激活的校准范围都来自原始浮点图，不会逐层重新估算量化后范围。
-
-参考模式的对称有符号量化使用窄范围（如 INT8 `[-127,127]`）。无符号对称量化采用中点零点（如 UINT8 `zero_point=128`，有效范围 `[1,255]`），不将负权重强行截断为零。非对称量化确保浮点零可精确表示。全零张量使用 `scale=1`；零点按对应方案确定。
-
-## Docker（原生模式）
-
-```bash
-docker build -t onnx-edge-quantizer .
-docker run --rm -v "$PWD:/work" onnx-edge-quantizer \
-  model.onnx -o model_int8.tflite --calibration calibration.npz
-```
-
-Windows PowerShell 挂载语法：
-
-```powershell
-docker run --rm -v "${PWD}:/work" onnx-edge-quantizer model.onnx -o model_int8.tflite
-```
-
-## 示例和测试
-
-```bash
-python examples/make_demo.py
-onnx-edge-quantizer artifacts/demo/demo.onnx -o artifacts/demo/demo_int8.tflite \
-  --calibration artifacts/demo/calibration.npz \
-  --validation-data artifacts/demo/validation.npz
-
-# Windows 本机可验证完整的 ONNX -> 浮点 TFLite -> 参考量化流程。
-onnx-edge-quantizer artifacts/demo/demo.onnx -o artifacts/demo/demo_reference.tflite \
-  --mode reference --calibration artifacts/demo/calibration.npz
-
-python -m pytest -q
-```
-
-测试包含：两种权重粒度下各 5×5 共 25 个参考精度组合的实际 LiteRT 推理与独立 NumPy 结果比较、Min-Max 数学边界和全零通道、多输入与动态尺寸、外部和合成校准、模型转换一致性、禁止静默覆盖及不支持的原生精度拒绝。完整 onnx2tf 和 AEQ 集成测试见 `tests/test_integration.py`，相应依赖可用时执行。
-
-2026-10-16 本机验证：原有 105 项测试与新增 4 项集成测试均通过，共 109 项。集成覆盖 ONNX 转换、W8A8 / W8A16 / W4A8 的逐张量和逐通道原生整数推理、NCHW 普通卷积/深度卷积网络、实际 scale 数量和通道轴检查、两个输入且范围超出 `[0,1]` 的校准、从 ONNX 开始的完整 W4A8 导出，以及 Windows 临时文件清理；实际 PowerShell 命令也已生成 `artifacts/demo/demo_int8.tflite`、`demo_per_channel_int8.tflite`、`demo_w4a8.tflite` 与 UINT4/INT4 参考模型。此验证使用生成的小模型，未宣称覆盖所有 ONNX 模型或加速器。Docker 配置已提供，未在本机运行 Docker 构建测试。
-
-## 上游资料
-
-- [Google AI Edge Quantizer（支持精度与算子覆盖）](https://github.com/google-ai-edge/ai-edge-quantizer)
-- [AEQ 静态量化 recipe 约束](https://github.com/google-ai-edge/ai-edge-quantizer/blob/main/ai_edge_quantizer/recipe_manager.py)
-- [onnx2tf（ONNX 到 TFLite 的转换后端）](https://github.com/PINTO0309/onnx2tf)
-- [LiteRT INT8 量化规范](https://ai.google.dev/edge/litert/models/quantization_spec)
+ReLU、LeakyReLU、Sigmoid、Softmax、池化、Add/Mul、Concat、Reshape、Transpose、Slice 等无 INT4 权重的算子沿用 INT8 或形状/索引内核，具体参数组合仍受 AEQ/LiteRT 限制；含上述算子不代表整个模型一定可转换。详细模型验证记录见 [W4A8 调试记录](docs/W4A8_DEBUG_30.md)。
